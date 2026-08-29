@@ -23,12 +23,14 @@ type OllamaClient struct {
 }
 
 // NewOllamaClient returns a client for the given base URL (e.g. http://host:11434).
-// token may be empty when the server does not require auth.
-func NewOllamaClient(baseURL, token string) *OllamaClient {
+// token may be empty when the server does not require auth. timeout bounds a
+// whole request including body streaming (long generations need a generous
+// value); 0 means no timeout.
+func NewOllamaClient(baseURL, token string, timeout time.Duration) *OllamaClient {
 	return &OllamaClient{
 		BaseURL:    strings.TrimRight(baseURL, "/"),
 		Token:      token,
-		HTTPClient: &http.Client{Timeout: 5 * time.Minute},
+		HTTPClient: &http.Client{Timeout: timeout},
 	}
 }
 

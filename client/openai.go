@@ -23,12 +23,14 @@ type OpenAIClient struct {
 }
 
 // NewOpenAIClient creates a client for an OpenAI-compatible server.
-// token may be empty when the server does not require auth.
-func NewOpenAIClient(baseURL, token string) *OpenAIClient {
+// token may be empty when the server does not require auth. timeout bounds a
+// whole request including body streaming (long generations need a generous
+// value); 0 means no timeout.
+func NewOpenAIClient(baseURL, token string, timeout time.Duration) *OpenAIClient {
 	return &OpenAIClient{
 		BaseURL:    strings.TrimRight(baseURL, "/"),
 		Token:      token,
-		HTTPClient: &http.Client{Timeout: 5 * time.Minute},
+		HTTPClient: &http.Client{Timeout: timeout},
 	}
 }
 

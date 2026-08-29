@@ -32,6 +32,7 @@ func main() {
 	flag.Var(&parents, "parent", "parent cllama server: http://[token@]host:port/<parent-model> (repeatable; ?to=<local-model> to remap)")
 	parentAuth := flag.String("parentauth", "", "token child cllama servers must present to connect as tunnel backends")
 	apiToken := flag.String("token", "", "bearer token required on LLM API and model-list requests")
+	genTimeoutSec := flag.Int("gen-timeout", 0, "seconds before aborting an upstream generation request (0 = no timeout)")
 	flag.Parse()
 
 	var models []string
@@ -41,7 +42,7 @@ func main() {
 		}
 	}
 
-	srv, err := server.New(*maxQueue, models, parents, *parentAuth, *apiToken)
+	srv, err := server.New(*maxQueue, models, parents, *parentAuth, *apiToken, time.Duration(*genTimeoutSec)*time.Second)
 	if err != nil {
 		log.Fatalf("failed to create server: %v", err)
 	}
@@ -67,6 +68,11 @@ func main() {
 		}
 		if *apiToken != "" {
 			fmt.Println("API token required on /api and /v1 endpoints")
+		}
+		if *genTimeoutSec > 0 {
+			fmt.Printf("upstream generation timeout: %ds\n", *genTimeoutSec)
+		} else {
+			fmt.Println("upstream generation timeout: none (-gen-timeout <sec> to enable)")
 		}
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http serve: %v", err)
