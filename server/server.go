@@ -22,6 +22,9 @@ type Server struct {
 	// When set, LLM API and model-list requests must present this bearer token.
 	apiToken string
 
+	// Timeout applied to upstream backend requests (0 = no timeout).
+	genTimeout time.Duration
+
 	// Reported as modified_at in the ollama /api/tags model list.
 	startedAt time.Time
 }
@@ -32,15 +35,18 @@ type Server struct {
 // servers, in the form http://[token@]host:port/<parent-model>.
 // parentAuth, when non-empty, is the token child cllama servers must present.
 // apiToken, when non-empty, is the bearer token required on LLM API requests.
-func New(maxQueue int, models []string, parentURLs []string, parentAuth, apiToken string) (*Server, error) {
+// genTimeout bounds each upstream backend request (0 = no timeout).
+func New(maxQueue int, models []string, parentURLs []string, parentAuth, apiToken string, genTimeout time.Duration) (*Server, error) {
 	s := &Server{
 		router:     NewRouter(maxQueue, models),
 		calls:      newCallRegistry(),
 		parentAuth: parentAuth,
 		apiToken:   apiToken,
+		genTimeout: genTimeout,
 		startedAt:  time.Now(),
 	}
 	s.parents = NewParentManager(s)
+
 	for _, raw := range parentURLs {
 		if _, err := s.parents.Add(raw); err != nil {
 			return nil, err

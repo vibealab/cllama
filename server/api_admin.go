@@ -133,7 +133,7 @@ func (s *Server) registerBackend(w http.ResponseWriter, r *http.Request) {
 		Token:        body.Token,
 		Bindings:     map[string]string{body.Model: upstream},
 		Capabilities: body.Capabilities,
-		client:       buildClient(client.BackendType(body.Type), body.Endpoint, body.Token),
+		client:       s.buildClient(client.BackendType(body.Type), body.Endpoint, body.Token),
 	}
 	if len(entry.Capabilities) == 0 {
 		entry.Capabilities = DefaultCapabilities
@@ -234,12 +234,14 @@ func backendView(be *BackendEntry) map[string]interface{} {
 	}
 }
 
-func buildClient(t client.BackendType, endpoint, token string) client.Client {
+// buildClient constructs the upstream client, applying the server's
+// -gen-timeout (0 = no timeout).
+func (s *Server) buildClient(t client.BackendType, endpoint, token string) client.Client {
 	switch t {
 	case client.BackendOllama:
-		return client.NewOllamaClient(endpoint, token)
+		return client.NewOllamaClient(endpoint, token, s.genTimeout)
 	case client.BackendOpenAI:
-		return client.NewOpenAIClient(endpoint, token)
+		return client.NewOpenAIClient(endpoint, token, s.genTimeout)
 	default:
 		return nil
 	}
