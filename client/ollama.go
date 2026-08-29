@@ -133,8 +133,8 @@ func (c *OllamaClient) ChatStream(ctx context.Context, req *ChatRequest) (io.Rea
 }
 
 // StreamToSSE converts Ollama's line-delimited JSON stream to OpenAI SSE.
-func (c *OllamaClient) StreamToSSE(ctx context.Context, body io.Reader, model string, out chan<- string) {
-	parseOllamaStream(ctx, body, model, out)
+func (c *OllamaClient) StreamToSSE(ctx context.Context, body io.Reader, model string, out chan<- string) error {
+	return parseOllamaStream(ctx, body, model, out)
 }
 
 func (c *OllamaClient) buildChatRequest(req *ChatRequest, stream bool) OllamaChatRequest {
@@ -382,8 +382,9 @@ func buildOptions(req *ChatRequest) map[string]any {
 // ── Streaming SSE parsing ───────────────────────────────────────────────────
 
 // parseOllamaStream reads Ollama's line-delimited JSON stream and writes
-// OpenAI-format SSE events into out. It closes out when done.
-func parseOllamaStream(ctx context.Context, body io.Reader, model string, out chan<- string) {
+// OpenAI-format SSE events into out. It closes out when done and returns an
+// error if the stream ended before ollama's final done event.
+func parseOllamaStream(ctx context.Context, body io.Reader, model string, out chan<- string) error {
 	defer close(out)
 
 	scanner := bufio.NewScanner(body)
@@ -419,7 +420,7 @@ func parseOllamaStream(ctx context.Context, body io.Reader, model string, out ch
 				Model:   model,
 				Choices: []StreamingChatChoice{choice},
 			}) {
-				return
+				return ctx.Err()
 			}
 		} else {
 			writeSSEEvent(ctx, out, StreamingChatResponse{
@@ -439,10 +440,18 @@ func parseOllamaStream(ctx context.Context, body io.Reader, model string, out ch
 			select {
 			case out <- "data: [DONE]\n\n":
 			case <-ctx.Done():
+				return ctx.Err()
 			}
-			return
+			return nil
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("ollama stream read: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fmt.Errorf("ollama upstream closed before done event")
 }
 
 // writeSSEEvent sends one SSE event, reporting false if ctx was cancelled.

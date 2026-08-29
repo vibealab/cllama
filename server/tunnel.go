@@ -290,7 +290,7 @@ func (t *tunnelClient) ChatStream(ctx context.Context, req *client.ChatRequest) 
 }
 
 // StreamToSSE converts the child's NDJSON lines into OpenAI SSE events.
-func (t *tunnelClient) StreamToSSE(ctx context.Context, body io.Reader, model string, out chan<- string) {
+func (t *tunnelClient) StreamToSSE(ctx context.Context, body io.Reader, model string, out chan<- string) error {
 	defer close(out)
 
 	scanner := bufio.NewScanner(body)
@@ -304,18 +304,26 @@ func (t *tunnelClient) StreamToSSE(ctx context.Context, body io.Reader, model st
 			select {
 			case out <- "data: [DONE]\n\n":
 			case <-ctx.Done():
+				return ctx.Err()
 			}
-			return
+			return nil
 		}
-		if envelopeError(line) != "" {
-			return // stream failed; end without [DONE]
+		if msg := envelopeError(line); msg != "" {
+			return errors.New("child cllama: " + msg) // stream failed; end without [DONE]
 		}
 		select {
 		case out <- "data: " + line + "\n\n":
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("tunnel stream read: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errors.New("tunnel child closed before [DONE]")
 }
 
 // tunnelReader turns a call's NDJSON lines into an io.ReadCloser.

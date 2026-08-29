@@ -21,8 +21,11 @@ type Client interface {
 
 	// StreamToSSE reads a raw body produced by ChatStream and writes
 	// OpenAI-format SSE events ("data: {...}\n\n") into out.
-	// It closes out when the stream is complete.
-	StreamToSSE(ctx context.Context, body io.Reader, model string, out chan<- string)
+	// It closes out when the stream is complete and returns the stream's
+	// failure: nil only when the upstream terminated cleanly ([DONE] /
+	// done event). A truncated stream (upstream died, connection reset)
+	// must return an error so callers do not report a silent success.
+	StreamToSSE(ctx context.Context, body io.Reader, model string, out chan<- string) error
 
 	// Embeddings returns one embedding vector per input item.
 	// input may be a string or a []string.

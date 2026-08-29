@@ -85,8 +85,9 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, req *ChatRequest) (io.Rea
 }
 
 // StreamToSSE relays upstream OpenAI SSE events into out. It closes out when
-// the stream completes.
-func (c *OpenAIClient) StreamToSSE(ctx context.Context, body io.Reader, model string, out chan<- string) {
+// the stream completes and reports a failure when the upstream ended without
+// a [DONE] event (e.g. the upstream server died mid-generation).
+func (c *OpenAIClient) StreamToSSE(ctx context.Context, body io.Reader, model string, out chan<- string) error {
 	defer close(out)
 
 	scanner := bufio.NewScanner(body)
@@ -101,12 +102,19 @@ func (c *OpenAIClient) StreamToSSE(ctx context.Context, body io.Reader, model st
 		select {
 		case out <- send:
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		}
 		if data == "[DONE]" {
-			return
+			return nil
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("openai stream read: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fmt.Errorf("openai upstream closed before [DONE]")
 }
 
 // ── Embeddings ───────────────────────────────────────────────────────────────

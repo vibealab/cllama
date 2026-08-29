@@ -67,13 +67,17 @@ func (s *Server) execChatStream(ctx context.Context, req *client.ChatRequest, em
 	defer upstream.Close()
 
 	ch := make(chan string, 16)
-	go be.client.StreamToSSE(ctx, upstream, req.Model, ch)
+	sseErr := make(chan error, 1)
+	go func() { sseErr <- be.client.StreamToSSE(ctx, upstream, req.Model, ch) }()
 
 	for {
 		select {
 		case evt, ok := <-ch:
 			if !ok {
-				return nil
+				// StreamToSSE closes ch only after its result is queued, so
+				// this receive never blocks. A truncated upstream stream is
+				// an error, not a silent 200.
+				return <-sseErr
 			}
 			if !emit(evt) {
 				return nil
@@ -129,7 +133,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mockModel := req.Model
-	ollamaStyle := strings.HasPrefix(r.URL.Path, "/api/")
+	ollamaStyle := isOllamaRoute(r.URL.Path)
 
 	if req.Stream {
 		s.streamChatResponse(w, r, &req, mockModel, ollamaStyle)
@@ -228,11 +232,23 @@ func (s *Server) streamChatResponse(w http.ResponseWriter, r *http.Request, req 
 	}
 
 	err := s.execChatStream(r.Context(), req, emit)
-	if err != nil && !headerSent {
+	switch {
+	case err != nil && !headerSent:
 		respondRouteError(w, mockModel, err)
-	} else if err != nil {
+	case err != nil:
 		log.Printf("[http] chat stream model %q aborted after headers were sent: %v", mockModel, err)
+		if ollamaStyle {
+			// ollama clients surface an {"error": ...} NDJSON line to the caller.
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			flusher.Flush()
+		}
 	}
+}
+
+// isOllamaRoute reports whether path speaks ollama's wire format. Note that
+// /api/openai/* endpoints are OpenAI-format despite living under /api/.
+func isOllamaRoute(path string) bool {
+	return strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/api/openai/")
 }
 
 // ── Ollama response wire types (for /api/chat) ──────────────────────────────
@@ -366,8 +382,8 @@ func (s *Server) handleEmbedding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ollama-style response for /api/embed*, OpenAI-style for /v1/embeddings.
-	if strings.HasPrefix(r.URL.Path, "/api/") {
+	// Ollama-style response for /api/embed*, OpenAI-style for /api/openai/*.
+	if isOllamaRoute(r.URL.Path) {
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"model":      raw.Model,
 			"embeddings": embeddings,
