@@ -61,7 +61,7 @@ go build .
 ### 1. Start the proxy
 
 ```sh
-./cllama -listen :11435 -name llama3,embeddings
+./cllama -listen :11434 -name llama3,embeddings
 ```
 
 Every name in `-name` is a *mock model* the proxy advertises; it becomes
@@ -98,6 +98,61 @@ curl http://localhost:11434/admin/backends          # list backends
 curl http://localhost:11434/admin/models            # models and their bindings
 curl -X DELETE http://localhost:11434/admin/backends/<id>   # unregister
 ```
+
+### Chat vs embedding models: capabilities
+
+Each backend registration can declare what its model can actually do, via the
+`capabilities` field. This is what the proxy advertises for the model through
+`/api/show`, and the ollama CLI consults it before enabling features like
+vision, tools, thinking, or embedding:
+
+| Capability | Meaning |
+| --- | --- |
+| `completion` | interactive chat / text completion |
+| `vision` | accepts images in messages |
+| `tools` | supports tool/function calling |
+| `thinking` | supports extended-thinking modes |
+| `embedding` | embedding model — **the ollama CLI then treats the model as embedding-only and refuses interactive chat** |
+
+The default (when omitted) is `["completion", "vision", "tools", "thinking"]`.
+
+So a **chat model** needs no extra configuration — the default already serves
+chat through both APIs:
+
+```sh
+curl -X POST http://localhost:11434/admin/backends -d '{
+  "type": "ollama", "endpoint": "http://192.168.1.101:11434",
+  "model": "llama3", "upstream_model": "llama3:8b"
+}'
+```
+
+An **embedding model** should be registered with `"capabilities":
+["embedding"]` so clients (and `ollama run`) treat it as an embedding model
+rather than offering it for chat:
+
+```sh
+curl -X POST http://localhost:11434/admin/backends -d '{
+  "type": "ollama", "endpoint": "http://192.168.1.101:11434",
+  "model": "embeddings", "upstream_model": "nomic-embed-text",
+  "capabilities": ["embedding"]
+}'
+```
+
+Chat and embedding models can coexist in one proxy — just list them both in
+`-name` (e.g. `-name llama3,embeddings`) and bind each to the right backend.
+Embeddings can then be requested from `/api/embeddings` (Ollama style) or
+`/api/openai/v1/embeddings` (OpenAI style) regardless of the backend type.
+
+Notes:
+
+- Trim the list to match reality — e.g. a backend without tool calling should
+  be registered with `"capabilities": ["completion"]`.
+- When several backends serve the same mock model, the advertised capabilities
+  are the **intersection** of all their capability lists, so a feature is only
+  promised when every round-robin peer can serve it.
+- Capabilities are per-backend and set at registration time; the
+  `/admin/backends/<id>/bindings` endpoint adds model bindings but does not
+  change them.
 
 ### 3. Use the APIs
 
