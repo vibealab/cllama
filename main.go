@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -55,6 +56,14 @@ func main() {
 		srv.UseUI(os.DirFS(*debugUI))
 	}
 
+	// rootCtx is the base context for every request (via BaseContext below).
+	// Cancelling it on SIGINT/SIGTERM unblocks the long-lived SSE handlers
+	// (web UI /admin/events, parent/child tunnel streams) and aborts in-flight
+	// upstream generation requests, so httpSrv.Shutdown returns immediately
+	// instead of blocking until those connections go idle.
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
 	// Note: no global Read/Write timeouts — chat streams and parent/child
 	// tunnel SSE connections are long-lived.
 	httpSrv := &http.Server{
@@ -62,6 +71,7 @@ func main() {
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return rootCtx },
 	}
 
 	go func() {
@@ -94,9 +104,16 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
+	// Cancel the root context first: every in-flight request's context
+	// derives from it, so SSE streams and upstream calls abort at once and
+	// Shutdown does not have to wait for idle connections.
+	rootCancel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	httpSrv.Shutdown(ctx)
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		log.Printf("http shutdown: %v", err)
+	}
 	srv.ShutDown()
 	fmt.Println("cllama shut down gracefully")
 }
