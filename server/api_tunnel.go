@@ -31,12 +31,15 @@ import (
 
 const tunnelPingInterval = 20 * time.Second
 
-// checkParentAuth enforces the -parentauth token on tunnel endpoints.
+// checkParentAuth enforces the configured parent-auth token on tunnel
+// endpoints (config.ParentAuth, seeded from -parentauth; empty means
+// tunnel connections are unauthenticated).
 func (s *Server) checkParentAuth(r *http.Request) bool {
-	if s.parentAuth == "" {
+	want := s.cfg.Get().ParentAuth
+	if want == "" {
 		return true
 	}
-	if strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") == s.parentAuth {
+	if strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") == want {
 		return true
 	}
 	log.Printf("[tunnel] %s %s from %s rejected: invalid or missing parent auth", r.Method, r.URL.Path, r.RemoteAddr)

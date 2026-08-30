@@ -46,7 +46,8 @@ window.API = (() => {
     removeQueued: (id) => sendJSON("DELETE", `/admin/queue/${enc(id)}`),
 
     // System settings (in-memory config)
-    updateConfig: (cfg) => sendJSON("PUT", "/admin/config", cfg),
+    updateConfig:   (cfg) => sendJSON("PUT", "/admin/config", cfg),
+    configSecret:   (name) => getJSON("/admin/config/secret/" + enc(name)),
 
     // Live updates: onTopic receives "hello" | "queue" | "backends" |
     // "parents". Returns the EventSource so callers can hook open/error.

@@ -31,12 +31,6 @@ type Server struct {
 	// Child-side: outbound connections to parent cllama servers (-parent).
 	parents *ParentManager
 
-	// When set, child tunnel connections must present this bearer token.
-	parentAuth string
-
-	// When set, LLM API and model-list requests must present this bearer token.
-	apiToken string
-
 	// Reported as modified_at in the ollama /api/tags model list.
 	startedAt time.Time
 }
@@ -45,8 +39,9 @@ type Server struct {
 // maxQueue caps how many requests are held when no backend is available.
 // parentURLs (see -parent) connect this server as a child to parent cllama
 // servers, in the form http://[token@]host:port/<parent-model>.
-// parentAuth, when non-empty, is the token child cllama servers must present.
+// parentAuth, when non-empty, is the token child cllama servers must present;
 // apiToken, when non-empty, is the bearer token required on LLM API requests.
+// Both seed the in-memory config and stay adjustable via PUT /admin/config.
 // genTimeout bounds each upstream backend request (0 = no timeout); it
 // seeds the in-memory config and stays adjustable via PUT /admin/config.
 func New(maxQueue int, models []string, parentURLs []string, parentAuth, apiToken string, genTimeout time.Duration) (*Server, error) {
@@ -54,6 +49,8 @@ func New(maxQueue int, models []string, parentURLs []string, parentAuth, apiToke
 	appCfg := config.Default()
 	appCfg.MaxQueue = maxQueue
 	appCfg.GenTimeout = genTimeout
+	appCfg.ParentAuth = parentAuth
+	appCfg.APIToken = apiToken
 	store := config.NewStore(appCfg)
 	s := &Server{
 		cfg:        store,
@@ -61,8 +58,6 @@ func New(maxQueue int, models []string, parentURLs []string, parentAuth, apiToke
 		events:     events,
 		uiFS:       ui.FS(),
 		calls:      newCallRegistry(),
-		parentAuth: parentAuth,
-		apiToken:   apiToken,
 		startedAt:  time.Now(),
 	}
 	s.parents = NewParentManager(s)

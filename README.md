@@ -236,8 +236,8 @@ executed on the child's local Ollama. Details:
 | `-name` | — | comma-separated mock model names exposed by this proxy |
 | `-maxqueue` | `100` | max requests queued while no backend is available (seeds the runtime config) |
 | `-parent` | — | parent cllama URL `http://[token@]host:port/<model>` (repeatable; `?to=<local-model>` to remap) |
-| `-parentauth` | — | token child cllama servers must present to tunnel into this server |
-| `-token` | — | bearer token required on all LLM API and model-list requests |
+| `-parentauth` | — | token child cllama servers must present to tunnel into this server (seeds the runtime config) |
+| `-token` | — | bearer token required on all LLM API and model-list requests (seeds the runtime config) |
 | `-gen-timeout` | `0` | seconds before aborting an upstream generation request (0 = none; seeds the runtime config) |
 | `-debug-ui` | — | serve the web UI from this directory instead of the embedded assets (development) |
 
@@ -258,7 +258,8 @@ Every cllama server embeds a small dashboard, served at `http://<listen>/ui/`:
   or connected child cllama tunnel, with register / unregister and
   enable / disable controls, plus the child side's parent connections.
 - **Settings** tab — the server's in-memory system configuration (max queue
-  size, done / failed request retention, generation timeout), from
+  size, done / failed request retention, generation timeout, API and
+  parent-auth tokens with masked / 👁 reveal display), from
   `GET /admin/config`.
 
 The page subscribes to `GET /admin/events` (Server-Sent Events); the server

@@ -42,6 +42,16 @@ type Config struct {
 	// It applies to clients of backends registered after the value
 	// changes; already-registered backends keep the old timeout.
 	GenTimeout time.Duration
+
+	// APIToken is the bearer token required on LLM API and model-list
+	// requests (seeded from -token); empty means unauthenticated.
+	// Kept in plain memory; never log it.
+	APIToken string
+
+	// ParentAuth is the token child cllama servers must present to tunnel
+	// into this server (seeded from -parentauth); empty means
+	// unauthenticated.
+	ParentAuth string
 }
 
 // Default returns the default system configuration: queueing enabled with

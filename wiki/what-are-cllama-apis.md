@@ -50,7 +50,8 @@ consumed through either. Streaming works in both directions (Ollama NDJSON
 | `POST /admin/backends/<id>/bindings` | bind another model to a backend |
 | `POST /admin/backends/<id>/enabled` | enable/disable a backend (incl. child tunnels), body `{"enabled": true\|false}` |
 | `GET /admin/models` | mock models with their backend bindings |
-| `GET/PUT /admin/config` | show / update the in-memory system settings (queue depth, done/fail retention, generation timeout) |
+| `GET/PUT /admin/config` | show / update the in-memory system settings (queue depth, done/fail retention, generation timeout, API token, parent auth) |
+| `GET /admin/config/secret/<name>` | reveal one token (`api_token` / `parent_auth`) in plain text — used by the web UI eye toggle |
 | `GET/DELETE /admin/parents` | inspect / disconnect tunnel parent connections |
 | `GET /admin/queue` | requests tracked in the lifecycle queue (pending / takeaway / processing / done / fail) |
 | `DELETE /admin/queue/<id>` | remove a queued request by hand (e.g. a retained done or failed one) |
@@ -64,7 +65,13 @@ real time without polling; consumers refetch the matching admin endpoint.
 `{"done_retention_sec":300,"failed_retention_sec":-1,"gen_timeout_sec":120}`:
 retentions of `-1` keep entries in the request queue forever (see the
 [request lifecycle](what-is-request-lifecycle.md)), and `gen_timeout_sec`
-of `0` means no upstream timeout.
+of `0` means no upstream timeout. The tokens travel only when explicitly
+managed: `GET /admin/config` reduces them to `has_api_token` /
+`has_parent_auth` flags, `PUT` changes one by including `"api_token":
+"…"` or `"parent_auth": "…"` (empty string disables the respective auth),
+and `GET /admin/config/secret/<name>` reveals the plain text. Tokens are
+stored in plain memory — anyone who can reach `/admin` can read and change
+them, so keep it off untrusted networks.
 
 ## Tunnel endpoints (internal)
 

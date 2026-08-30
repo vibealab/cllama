@@ -43,6 +43,7 @@ func (s *Server) HandleFunc(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/backends/", s.handleAdminBackendDetail)
 	mux.HandleFunc("/admin/models", s.handleAdminModels)
 	mux.HandleFunc("/admin/config", s.handleAdminConfig)
+	mux.HandleFunc("/admin/config/secret/", s.handleAdminConfigSecret)
 	mux.HandleFunc("/admin/queue", s.handleAdminQueue)
 	mux.HandleFunc("/admin/queue/", s.handleAdminQueueDetail)
 	mux.HandleFunc("/admin/events", s.handleAdminEvents)
@@ -60,17 +61,18 @@ func (s *Server) HandleFunc(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/parents/", s.handleAdminParentDetail)
 }
 
-// requireAPIToken guards LLM API endpoints with the -token bearer token.
-// When -token is unset, requests pass through unauthenticated.
+// requireAPIToken guards LLM API endpoints with the configured API token
+// (config.APIToken, seeded from -token; empty means unauthenticated).
 func (s *Server) requireAPIToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.apiToken == "" {
+		want := s.cfg.Get().APIToken
+		if want == "" {
 			next(w, r)
 			return
 		}
 
 		token := bearerToken(r)
-		if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.apiToken)) == 1 {
+		if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(want)) == 1 {
 			next(w, r)
 			return
 		}
