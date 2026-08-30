@@ -11,6 +11,7 @@ package server
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -356,6 +357,9 @@ func (s *Server) streamGenerate(r *http.Request, w http.ResponseWriter, req *cli
 	switch {
 	case err != nil && !headerSent:
 		respondRouteError(w, mockModel, err)
+	case errors.Is(err, errClientGone):
+		// The client is already gone; there is nobody left to read an error.
+		log.Printf("[ollama] /api/generate stream for model %q cancelled: client disconnected", mockModel)
 	case err != nil:
 		// mid-stream failure: report an ollama-style error line, end stream
 		log.Printf("[ollama] /api/generate stream for model %q aborted: %v", mockModel, err)

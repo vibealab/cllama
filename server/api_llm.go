@@ -25,6 +25,13 @@ import (
 
 // ── Core pipeline ────────────────────────────────────────────────────────────
 
+// errClientGone aborts a stream whose consumer (downstream client that
+// clicked stop, or a parent tunnel that went away) disconnected mid-stream.
+// Failing the queued request with it cancels the request's call context, so
+// the upstream connection is closed and the backend stops generating instead
+// of running to completion for a vanished client.
+var errClientGone = errors.New("cancelled: client disconnected")
+
 // execChat routes and executes a non-streaming chat request.
 // On success req.Model is rewritten to the upstream model name.
 func (s *Server) execChat(ctx context.Context, req *client.ChatRequest) (*client.ChatResponse, error) {
@@ -54,7 +61,8 @@ func (s *Server) execChat(ctx context.Context, req *client.ChatRequest) (*client
 
 // execChatStream routes and executes a streaming chat request. emit receives
 // complete OpenAI SSE events ("data: {...}\n\n"); returning false from emit
-// aborts the stream.
+// aborts the stream, fails the queued request with errClientGone and cancels
+// the upstream generation.
 func (s *Server) execChatStream(ctx context.Context, req *client.ChatRequest, emit func(event string) bool) error {
 	mockModel := req.Model
 	be, upstreamModel, rq, err := s.router.Acquire(ctx, mockModel)
@@ -97,12 +105,17 @@ func (s *Server) execChatStream(ctx context.Context, req *client.ChatRequest, em
 				return nil
 			}
 			if !emit(evt) {
-				rq.Done()
-				return nil
+				// The consumer vanished (client clicked stop). Fail the queued
+				// request: this cancels its call context, and the deferred
+				// upstream.Close tears down the backend connection, which makes
+				// the upstream server abort generation right away.
+				log.Printf("[route] chat stream %q backend %s: client disconnected, aborting upstream generation", mockModel, be.ID)
+				rq.Fail(errClientGone)
+				return errClientGone
 			}
 		case <-ctx.Done():
 			log.Printf("[route] chat stream %q backend %s aborted: %v", mockModel, be.ID, ctx.Err())
-			rq.Fail(ctx.Err())
+			rq.Fail(fmt.Errorf("request cancelled: %w", ctx.Err()))
 			return ctx.Err()
 		}
 	}
@@ -201,7 +214,14 @@ func (s *Server) streamChatResponse(w http.ResponseWriter, r *http.Request, req 
 			w.WriteHeader(http.StatusOK)
 			headerSent = true
 		}
-		fmt.Fprint(w, evt)
+		// A failed write means the client went away (e.g. Zed's stop button).
+		// While a handler streams, Go's HTTP/1 server surfaces disconnects only
+		// through write errors, so this check is what aborts the relay; returning
+		// false cancels the upstream generation via execChatStream.
+		if _, err := fmt.Fprint(w, evt); err != nil {
+			log.Printf("[http] chat stream model %q client write failed: %v", mockModel, err)
+			return false
+		}
 		flusher.Flush()
 		return true
 	}
@@ -261,6 +281,9 @@ func (s *Server) streamChatResponse(w http.ResponseWriter, r *http.Request, req 
 	switch {
 	case err != nil && !headerSent:
 		respondRouteError(w, mockModel, err)
+	case errors.Is(err, errClientGone):
+		// The client is already gone; there is nobody left to read an error.
+		log.Printf("[http] chat stream model %q cancelled: client disconnected", mockModel)
 	case err != nil:
 		log.Printf("[http] chat stream model %q aborted after headers were sent: %v", mockModel, err)
 		if ollamaStyle {

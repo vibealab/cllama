@@ -157,6 +157,11 @@ func (s *Server) streamAnthropicChat(w http.ResponseWriter, r *http.Request, req
 	if err == nil {
 		return
 	}
+	if errors.Is(err, errClientGone) {
+		// The client is already gone; there is nobody left to read an error.
+		log.Printf("[http] anthropic stream model %q cancelled: client disconnected", mockModel)
+		return
+	}
 	if !enc.started {
 		respondAnthropicError(w, mockModel, err)
 		return
