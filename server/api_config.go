@@ -136,6 +136,9 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		next.ParentAuth = *body.ParentAuth
 	}
 	s.cfg.Update(next)
+	// Retentions may have just shrunk (e.g. 60s -> 0): scan the request
+	// queue immediately instead of waiting for the sweeper's next tick.
+	s.router.TriggerRetentionSweep()
 	// Log presence only — never the token values.
 	log.Printf("[admin] config updated via API: max_queue=%d done_retention=%ds failed_retention=%ds gen_timeout=%ds api_token_set=%t parent_auth_set=%t",
 		view.MaxQueue, view.DoneRetentionSec, view.FailedRetentionSec, view.GenTimeoutSec,

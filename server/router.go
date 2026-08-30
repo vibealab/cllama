@@ -88,6 +88,10 @@ type Router struct {
 	// stopCh shuts down the done/failed retention sweeper.
 	stopCh  chan struct{}
 	stopOne sync.Once
+
+	// sweepCh asks the retention sweeper to scan the queue immediately
+	// (buffered size 1; a pending sweep is enough).
+	sweepCh chan struct{}
 }
 
 // RequestHandle is a token for one LLM request tracked in the router's
@@ -161,8 +165,8 @@ type queuedRequest struct {
 
 // terminalRetention returns how long a request in the given terminal state
 // lingers in the queue before being purged, per the live configuration
-// (config.RetentionForever never expires, 0 is handled when the request
-// ends, >0 keeps that long); non-terminal states do not linger.
+// (config.RetentionForever never expires, 0 expires immediately, >0 keeps
+// that long); non-terminal states do not linger.
 func (r *Router) terminalRetention(state RequestState) time.Duration {
 	cfg := r.cfg.Get()
 	switch state {
@@ -186,8 +190,9 @@ func NewRouter(cfg *config.Store, models []string, events *eventHub) *Router {
 		models: models,
 		cfg:    cfg,
 		events: events,
-		queued: make(map[string]*queuedRequest),
-		stopCh: make(chan struct{}),
+		queued:  make(map[string]*queuedRequest),
+		stopCh:  make(chan struct{}),
+		sweepCh: make(chan struct{}, 1),
 	}
 	r.startRetentionSweeper()
 	return r
@@ -204,23 +209,48 @@ func (r *Router) startRetentionSweeper() {
 			select {
 			case <-r.stopCh:
 				return
+			case <-r.sweepCh:
+				r.sweepRetention(time.Now())
 			case now := <-ticker.C:
-				var changed bool
-				r.queueMu.Lock()
-				for id, q := range r.queued {
-					ret := r.terminalRetention(q.State)
-					if ret > 0 && now.Sub(q.EndedAt) >= ret {
-						delete(r.queued, id)
-						changed = true
-					}
-				}
-				r.queueMu.Unlock()
-				if changed {
-					r.events.emit(topicQueue)
-				}
+				r.sweepRetention(now)
 			}
 		}
 	}()
+}
+
+// sweepRetention purges terminal requests whose retention has expired. A
+// retention of 0 (drop immediately) expires at once, which is what makes
+// shrinking a retention (e.g. 60s -> 0) take effect on entries already in
+// the queue; config.RetentionForever never expires. Requests still in
+// flight (no EndedAt) are never touched.
+func (r *Router) sweepRetention(now time.Time) {
+	var changed bool
+	r.queueMu.Lock()
+	for id, q := range r.queued {
+		if q.EndedAt.IsZero() {
+			continue // not terminal yet: nothing to expire
+		}
+		ret := r.terminalRetention(q.State)
+		if ret >= 0 && now.Sub(q.EndedAt) >= ret {
+			delete(r.queued, id)
+			changed = true
+		}
+	}
+	r.queueMu.Unlock()
+	if changed {
+		r.events.emit(topicQueue)
+	}
+}
+
+// TriggerRetentionSweep asks the retention sweeper to run an immediate
+// scan, so a retention shrink (e.g. 60s -> 0) drops already-expired
+// entries without waiting for the next ticker tick. Cheap to call: the
+// pending-sweep signal is coalesced.
+func (r *Router) TriggerRetentionSweep() {
+	select {
+	case r.sweepCh <- struct{}{}:
+	default: // a sweep is already pending
+	}
 }
 
 // QueueStatus returns the requests currently tracked in the queue (newest
