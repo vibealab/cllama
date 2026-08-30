@@ -4,6 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>cllama</title>
+<script>
+// Apply the theme before first paint to avoid a flash of the wrong palette:
+// stored choice wins, otherwise follow the system preference.
+(function () {
+  var stored = null;
+  try { stored = localStorage.getItem("cllama-theme"); } catch (_) {}
+  var theme = stored || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+  document.documentElement.dataset.theme = theme;
+})();
+</script>
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -11,6 +21,7 @@
   <h1>cllama</h1>
   <div class="sub" id="subtitle">LLM proxy console</div>
   <div class="conn-status" id="conn-status" title="live updates via /admin/events (SSE)">connecting…</div>
+  <button type="button" class="theme-btn" id="theme-toggle" title="Toggle theme">🌙</button>
 </header>
 
 <nav id="tabs">

@@ -1,4 +1,5 @@
-:root {
+:root, :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #0f1117;
   --panel: #171a23;
   --panel-2: #1d212d;
@@ -9,6 +10,38 @@
   --green: #4ade80;
   --red: #f87171;
   --amber: #fbbf24;
+  --ok-edge: #2c4a38;
+  --bad-edge: #4a2c2c;
+  --warn-edge: #4a3f2c;
+  --err-bg: #241519;
+  --primary-text: #0b0d12;
+  --mask: rgba(4, 6, 10, 0.62);
+  --shadow: rgba(0, 0, 0, 0.55);
+  --toast-shadow: rgba(0, 0, 0, 0.45);
+  --toast-bad-text: #f3b4b4;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f5f8;
+  --panel: #ffffff;
+  --panel-2: #eef0f5;
+  --border: #d6dae4;
+  --text: #20242e;
+  --muted: #6a7080;
+  --accent: #2f6fed;
+  --green: #187a3e;
+  --red: #c23b3b;
+  --amber: #8a6400;
+  --ok-edge: #bfe3cc;
+  --bad-edge: #eccaca;
+  --warn-edge: #e8dcbc;
+  --err-bg: #fdeeee;
+  --primary-text: #ffffff;
+  --mask: rgba(30, 34, 44, 0.45);
+  --shadow: rgba(20, 24, 35, 0.18);
+  --toast-shadow: rgba(20, 24, 35, 0.12);
+  --toast-bad-text: #a02c2c;
 }
 
 * { box-sizing: border-box; }
@@ -35,6 +68,17 @@ header .sub { color: var(--muted); font-size: 13px; }
 }
 .conn-status.live { color: var(--green); }
 .conn-status.dead { color: var(--red); }
+
+/* theme switch (top-right of the header bar) */
+.theme-btn {
+  background: none;
+  border: 1px solid var(--border);
+  font-size: 15px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.theme-btn:hover { border-color: var(--accent); }
 
 nav#tabs {
   display: flex;
@@ -103,9 +147,9 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
   border: 1px solid var(--border);
   background: var(--panel-2);
 }
-.badge.ok { color: var(--green); border-color: #2c4a38; }
-.badge.bad { color: var(--red); border-color: #4a2c2c; }
-.badge.warn { color: var(--amber); border-color: #4a3f2c; }
+.badge.ok { color: var(--green); border-color: var(--ok-edge); }
+.badge.bad { color: var(--red); border-color: var(--bad-edge); }
+.badge.warn { color: var(--amber); border-color: var(--warn-edge); }
 .badge.muted { color: var(--muted); }
 .badge + .badge { margin-left: 4px; }
 
@@ -121,8 +165,8 @@ button {
 }
 button:hover { border-color: var(--accent); }
 button.danger:hover { border-color: var(--red); color: var(--red); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #0b0d12; font-weight: 600; }
-button.danger-solid { background: var(--red); border-color: var(--red); color: #1b0d0d; font-weight: 600; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--primary-text); font-weight: 600; }
+button.danger-solid { background: var(--red); border-color: var(--red); color: var(--primary-text); font-weight: 600; }
 
 /* emoji icon buttons (tooltip carries the meaning) */
 .icon-btn {
@@ -162,9 +206,9 @@ button.danger-solid { background: var(--red); border-color: var(--red); color: #
 .form-error {
   color: var(--red);
   font-size: 12.5px;
-  border: 1px solid #4a2c2c;
+  border: 1px solid var(--bad-edge);
   border-radius: 6px;
-  background: #241519;
+  background: var(--err-bg);
   padding: 7px 10px;
 }
 
@@ -172,7 +216,7 @@ button.danger-solid { background: var(--red); border-color: var(--red); color: #
 .mask {
   position: fixed;
   inset: 0;
-  background: rgba(4, 6, 10, 0.62);
+  background: var(--mask);
   backdrop-filter: blur(2px);
   z-index: 40;
 }
@@ -187,7 +231,7 @@ button.danger-solid { background: var(--red); border-color: var(--red); color: #
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 18px 60px var(--shadow);
   animation: modal-in 120ms ease-out;
 }
 @keyframes modal-in {
@@ -236,9 +280,9 @@ button.danger-solid { background: var(--red); border-color: var(--red); color: #
   font-size: 13px;
   border: 1px solid var(--border);
   background: var(--panel-2);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 8px 28px var(--toast-shadow);
   transition: opacity 0.4s, transform 0.4s;
 }
-.toast.toast-ok { border-color: #2c4a38; }
-.toast.toast-bad { border-color: #4a2c2c; color: #f3b4b4; }
+.toast.toast-ok { border-color: var(--ok-edge); }
+.toast.toast-bad { border-color: var(--bad-edge); color: var(--toast-bad-text); }
 .toast.fade { opacity: 0; transform: translateY(6px); }

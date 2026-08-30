@@ -21,6 +21,35 @@
     return m + "m " + String(Math.floor(s % 60)).padStart(2, "0") + "s";
   }
 
+  // ── theme switch (🌞/🌙) ──────────────────────────────────────────────
+  // Initial theme was already applied by the inline script in <head>
+  // (stored choice, else system preference). The button only ever toggles
+  // between dark and light and persists the explicit choice.
+  const themeBtn = $("#theme-toggle");
+
+  function applyTheme(theme, persist) {
+    document.documentElement.dataset.theme = theme;
+    themeBtn.textContent = theme === "light" ? "🌞" : "🌙";
+    themeBtn.title = theme === "light" ? "Light theme — click to switch to dark" : "Dark theme — click to switch to light";
+    if (persist) {
+      try { localStorage.setItem("cllama-theme", theme); } catch (_) {}
+    }
+  }
+
+  applyTheme(document.documentElement.dataset.theme || "dark", false);
+
+  themeBtn.addEventListener("click", () => {
+    applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light", true);
+  });
+
+  // While no explicit choice is stored, keep following the OS live.
+  const darkQuery = window.matchMedia("(prefers-color-scheme: light)");
+  darkQuery.addEventListener?.("change", (ev) => {
+    let stored = null;
+    try { stored = localStorage.getItem("cllama-theme"); } catch (_) {}
+    if (!stored) applyTheme(ev.matches ? "light" : "dark", false);
+  });
+
   // ── tabs ───────────────────────────────────────────────────────────────
   for (const tab of document.querySelectorAll("#tabs .tab")) {
     tab.addEventListener("click", () => {
