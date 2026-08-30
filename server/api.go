@@ -18,30 +18,36 @@ func (s *Server) HandleFunc(mux *http.ServeMux) {
 	// Root / health
 	mux.HandleFunc("/", s.handleRoot)
 
+	// API-surface toggles (config.Enable{Ollama,OpenAI,Anthropic}API,
+	// switchable at runtime from the web UI / PUT /admin/config): while a
+	// surface is disabled its routes answer 404 as if unregistered.
+	ollamaAPI := func() bool { return s.cfg.Get().EnableOllamaAPI }
+	openaiAPI := func() bool { return s.cfg.Get().EnableOpenAIAPI }
+
 	// Model list APIs (mock model names from -name)
-	mux.HandleFunc("/api/tags", s.requireAPIToken(s.handleModelsOllama))
-	mux.HandleFunc("/api/openai/v1/models", s.requireAPIToken(s.handleModelsOpenAI))
+	mux.HandleFunc("/api/tags", s.requireAPIEnabled(ollamaAPI, s.requireAPIToken(s.handleModelsOllama)))
+	mux.HandleFunc("/api/openai/v1/models", s.requireAPIEnabled(openaiAPI, s.requireAPIToken(s.handleModelsOpenAI)))
 
 	// Faked ollama-native endpoints so the ollama CLI's `run` preflight
 	// (/api/version, /api/show, /api/pull) succeeds and reaches /api/chat.
-	mux.HandleFunc("/api/version", s.requireAPIToken(s.handleVersionOllama))
-	mux.HandleFunc("/api/show", s.requireAPIToken(s.handleShowOllama))
-	mux.HandleFunc("/api/pull", s.requireAPIToken(s.handlePullOllama))
-	mux.HandleFunc("/api/generate", s.requireAPIToken(s.handleGenerateOllama))
+	mux.HandleFunc("/api/version", s.requireAPIEnabled(ollamaAPI, s.requireAPIToken(s.handleVersionOllama)))
+	mux.HandleFunc("/api/show", s.requireAPIEnabled(ollamaAPI, s.requireAPIToken(s.handleShowOllama)))
+	mux.HandleFunc("/api/pull", s.requireAPIEnabled(ollamaAPI, s.requireAPIToken(s.handlePullOllama)))
+	mux.HandleFunc("/api/generate", s.requireAPIEnabled(ollamaAPI, s.requireAPIToken(s.handleGenerateOllama)))
 
 	// LLM API routes (Ollama style)
-	mux.HandleFunc("/api/chat", s.requireAPIToken(s.handleChat))
-	mux.HandleFunc("/api/embed", s.requireAPIToken(s.handleEmbedding))
-	mux.HandleFunc("/api/embeddings", s.requireAPIToken(s.handleEmbedding))
+	mux.HandleFunc("/api/chat", s.requireAPIEnabled(ollamaAPI, s.requireAPIToken(s.handleChat)))
+	mux.HandleFunc("/api/embed", s.requireAPIEnabled(ollamaAPI, s.requireAPIToken(s.handleEmbedding)))
+	mux.HandleFunc("/api/embeddings", s.requireAPIEnabled(ollamaAPI, s.requireAPIToken(s.handleEmbedding)))
 
 	// LLM API routes (OpenAI style)
-	mux.HandleFunc("/api/openai/v1/chat/completions", s.requireAPIToken(s.handleChat))
-	mux.HandleFunc("/api/openai/v1/embeddings", s.requireAPIToken(s.handleEmbedding))
+	mux.HandleFunc("/api/openai/v1/chat/completions", s.requireAPIEnabled(openaiAPI, s.requireAPIToken(s.handleChat)))
+	mux.HandleFunc("/api/openai/v1/embeddings", s.requireAPIEnabled(openaiAPI, s.requireAPIToken(s.handleEmbedding)))
 
 	// LLM API routes (Anthropic Messages style; consumed by Claude Code and
 	// other Anthropic-native clients — see client/anthropic.go)
-	mux.HandleFunc("/api/anthropic/v1/messages", s.requireAPITokenAnthropic(s.handleAnthropicMessages))
-	mux.HandleFunc("/api/anthropic/v1/messages/count_tokens", s.requireAPITokenAnthropic(s.handleAnthropicCountTokens))
+	mux.HandleFunc("/api/anthropic/v1/messages", s.requireAnthropicEnabled(s.requireAPITokenAnthropic(s.handleAnthropicMessages)))
+	mux.HandleFunc("/api/anthropic/v1/messages/count_tokens", s.requireAnthropicEnabled(s.requireAPITokenAnthropic(s.handleAnthropicCountTokens)))
 
 	// Admin routes
 	mux.HandleFunc("/admin/backends", s.handleAdminBackends)
@@ -66,6 +72,20 @@ func (s *Server) HandleFunc(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/parents/", s.handleAdminParentDetail)
 }
 
+// requireAPIEnabled guards one of cllama's own API surfaces with its config
+// toggle (enable_ollama_api / enable_openai_api / enable_anthropic_api).
+// While disabled, the surface's routes answer 404 — as if they had never
+// been registered — so clients see the same shape as any unknown path.
+func (s *Server) requireAPIEnabled(enabled func() bool, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !enabled() {
+			respondJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		next(w, r)
+	}
+}
+
 // requireAPIToken guards LLM API endpoints with the configured API token
 // (config.APIToken, seeded from -token; empty means unauthenticated).
 func (s *Server) requireAPIToken(next http.HandlerFunc) http.HandlerFunc {
@@ -82,6 +102,20 @@ func (s *Server) requireAPIToken(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		respondJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing API token"})
+	}
+}
+
+// requireAnthropicEnabled guards the Anthropic-format surface with its
+// config toggle (enable_anthropic_api). Like requireAPIEnabled a disabled
+// surface answers 404, but in the Anthropic error envelope so Anthropic
+// clients can parse the response.
+func (s *Server) requireAnthropicEnabled(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.cfg.Get().EnableAnthropicAPI {
+			respondAnthropicErrorObj(w, http.StatusNotFound, "not_found_error", "anthropic api is disabled")
+			return
+		}
+		next(w, r)
 	}
 }
 

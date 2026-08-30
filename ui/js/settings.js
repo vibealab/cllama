@@ -94,6 +94,68 @@ window.Settings = (() => {
     return b;
   }
 
+  // ── API-surface toggles ───────────────────────────────────────────────
+  // Master switches for the API surfaces cllama itself exposes. Rendered
+  // above the numeric/secret settings; flipping one PUTs just that key and
+  // applies immediately (disabled surfaces answer 404).
+  const API_TOGGLES = [
+    {
+      key: "enable_ollama_api",
+      label: "Ollama API",
+      desc: "Expose the Ollama-format endpoints (/api/chat, /api/generate, /api/embed*, /api/tags, …). Disabled: they answer 404.",
+    },
+    {
+      key: "enable_openai_api",
+      label: "OpenAI API",
+      desc: "Expose the OpenAI-format endpoints (/api/openai/v1/chat/completions, /v1/embeddings, /v1/models). Disabled: they answer 404.",
+    },
+    {
+      key: "enable_anthropic_api",
+      label: "Anthropic API",
+      desc: "Expose the Anthropic-format endpoints (/api/anthropic/v1/messages). Disabled: they answer 404.",
+    },
+  ];
+
+  function renderToggle(cfg, def) {
+    const root = el("div", "setting");
+
+    const nameCell = el("div", "setting-name");
+    nameCell.textContent = def.label;
+
+    const body = el("div", "setting-body");
+    const valueRow = el("div", "setting-value");
+    const desc = el("p", "setting-desc");
+    desc.textContent = def.desc;
+    body.append(valueRow, desc);
+    root.append(nameCell, body);
+
+    const enabled = !!cfg[def.key];
+
+    // iOS-style switch built on a checkbox.
+    const label = el("label", "switch");
+    const input = el("input");
+    input.type = "checkbox";
+    input.checked = enabled;
+    input.title = enabled ? "Click to disable" : "Click to enable";
+    const knob = el("span", "switch-track");
+    label.append(input, knob);
+
+    valueRow.append(label, enabled ? badge("enabled", "ok") : badge("disabled", "bad"));
+
+    input.addEventListener("change", async () => {
+      input.disabled = true; // one in-flight PUT per switch
+      try {
+        await API.updateConfig({ [def.key]: input.checked });
+        UI.toast(def.label + " " + (input.checked ? "enabled" : "disabled"));
+      } catch (err) {
+        UI.toast("toggle failed: " + err.message, "bad");
+      }
+      refresh(); // repaint from the server's state (also re-enables the switch)
+    });
+
+    return root;
+  }
+
   // ── one row-div per setting, inline editing ─────────────────────────────
   function renderSetting(cfg, def) {
     const root = el("div", "setting");
@@ -216,7 +278,11 @@ window.Settings = (() => {
 
     const list = document.querySelector("#settings-list");
     if (!list) return;
-    list.replaceChildren(...SETTINGS.map((def) => renderSetting(cfg, def)));
+    // API-surface switches first, then the numeric/secret settings.
+    list.replaceChildren(
+      ...API_TOGGLES.map((def) => renderToggle(cfg, def)),
+      ...SETTINGS.map((def) => renderSetting(cfg, def)),
+    );
   }
 
   document.querySelector("#settings-refresh-btn")?.addEventListener("click", refresh);

@@ -52,17 +52,31 @@ type Config struct {
 	// into this server (seeded from -parentauth); empty means
 	// unauthenticated.
 	ParentAuth string
+
+	// EnableOllamaAPI, EnableOpenAIAPI and EnableAnthropicAPI toggle the
+	// API surfaces cllama itself exposes: the Ollama-format endpoints
+	// (/api/chat, /api/generate, /api/embed*, /api/tags, the ollama CLI
+	// preflight routes), the OpenAI-format endpoints (/api/openai/v1/*)
+	// and the Anthropic-format endpoints (/api/anthropic/v1/*).
+	// Disabled surfaces answer 404; the toggles apply immediately and are
+	// managed from the web UI / PUT /admin/config.
+	EnableOllamaAPI    bool
+	EnableOpenAIAPI    bool
+	EnableAnthropicAPI bool
 }
 
 // Default returns the default system configuration: queueing enabled with
-// a depth of 100, and completed/failed requests dropped as soon as they
-// reach a terminal state.
+// a depth of 100, completed/failed requests dropped as soon as they reach a
+// terminal state, and every API surface (Ollama, OpenAI, Anthropic) enabled.
 func Default() Config {
 	return Config{
-		MaxQueue:        100,
-		DoneRetention:   0,
-		FailedRetention: 0,
-		GenTimeout:      0,
+		MaxQueue:           100,
+		DoneRetention:      0,
+		FailedRetention:    0,
+		GenTimeout:         0,
+		EnableOllamaAPI:    true,
+		EnableOpenAIAPI:    true,
+		EnableAnthropicAPI: true,
 	}
 }
 

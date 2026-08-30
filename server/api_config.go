@@ -12,8 +12,9 @@ import (
 )
 
 // Admin API for the in-memory system configuration (queue depth, request
-// retention, auth tokens). Changes apply immediately but are not persisted:
-// a restart restores the defaults (see the config package).
+// retention, auth tokens, API-surface enable switches). Changes apply
+// immediately but are not persisted: a restart restores the defaults (see
+// the config package).
 //
 // GET  /admin/config             - show the current settings (tokens are
 //                                  reduced to has_* flags)
@@ -33,6 +34,9 @@ type configView struct {
 	GenTimeoutSec      int64 `json:"gen_timeout_sec"`
 	HasAPIToken        bool  `json:"has_api_token"`
 	HasParentAuth      bool  `json:"has_parent_auth"`
+	EnableOllamaAPI    bool  `json:"enable_ollama_api"`
+	EnableOpenAIAPI    bool  `json:"enable_openai_api"`
+	EnableAnthropicAPI bool  `json:"enable_anthropic_api"`
 }
 
 func configToView(cfg config.Config) configView {
@@ -43,6 +47,9 @@ func configToView(cfg config.Config) configView {
 		GenTimeoutSec:      int64(cfg.GenTimeout / time.Second),
 		HasAPIToken:        cfg.APIToken != "",
 		HasParentAuth:      cfg.ParentAuth != "",
+		EnableOllamaAPI:    cfg.EnableOllamaAPI,
+		EnableOpenAIAPI:    cfg.EnableOpenAIAPI,
+		EnableAnthropicAPI: cfg.EnableAnthropicAPI,
 	}
 }
 
@@ -129,6 +136,9 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	next.DoneRetention = secToRetention(view.DoneRetentionSec)
 	next.FailedRetention = secToRetention(view.FailedRetentionSec)
 	next.GenTimeout = genTimeoutFromSec(view.GenTimeoutSec)
+	next.EnableOllamaAPI = view.EnableOllamaAPI
+	next.EnableOpenAIAPI = view.EnableOpenAIAPI
+	next.EnableAnthropicAPI = view.EnableAnthropicAPI
 	if body.APIToken != nil {
 		next.APIToken = *body.APIToken
 	}
@@ -140,8 +150,9 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	// queue immediately instead of waiting for the sweeper's next tick.
 	s.router.TriggerRetentionSweep()
 	// Log presence only — never the token values.
-	log.Printf("[admin] config updated via API: max_queue=%d done_retention=%ds failed_retention=%ds gen_timeout=%ds api_token_set=%t parent_auth_set=%t",
+	log.Printf("[admin] config updated via API: max_queue=%d done_retention=%ds failed_retention=%ds gen_timeout=%ds ollama_api=%t openai_api=%t anthropic_api=%t api_token_set=%t parent_auth_set=%t",
 		view.MaxQueue, view.DoneRetentionSec, view.FailedRetentionSec, view.GenTimeoutSec,
+		view.EnableOllamaAPI, view.EnableOpenAIAPI, view.EnableAnthropicAPI,
 		next.APIToken != "", next.ParentAuth != "")
 
 	s.events.emit(topicConfig)
