@@ -107,13 +107,8 @@
         <h2>System settings</h2>
         <button type="button" id="settings-refresh-btn">🔄 Refresh</button>
       </div>
-      <p class="hint">In-memory configuration of this cllama server (<code>GET /admin/config</code>). Values live only in RAM: change them with <code>PUT /admin/config</code>; a restart restores the defaults.</p>
-      <table>
-        <thead>
-          <tr><th>Setting</th><th>Value</th><th>Description</th></tr>
-        </thead>
-        <tbody id="settings-rows"></tbody>
-      </table>
+      <p class="hint">In-memory configuration of this cllama server (<code>GET /admin/config</code>). Click ✏️ on a setting to edit it inline; saving sends <code>PUT /admin/config</code> and applies immediately. Values live only in RAM — a restart restores the defaults.</p>
+      <div id="settings-list"></div>
     </div>
   </section>
 </main>

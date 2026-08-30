@@ -187,6 +187,31 @@ button.danger-solid { background: var(--red); border-color: var(--red); color: v
 .model-group table { background: var(--panel-2); border-radius: 8px; overflow: hidden; }
 .arrow { color: var(--muted); }
 
+/* settings: one row-div per setting, inline-editable */
+.setting {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.setting:last-child { border-bottom: none; }
+.setting-name { min-width: 170px; font-weight: 600; }
+.setting-body { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.setting-value { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.setting-desc { color: var(--muted); font-size: 12px; margin: 0; }
+.setting-edit { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.setting-edit input {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 5px 9px;
+  min-width: 220px;
+}
+.setting-edit input:focus { outline: none; border-color: var(--accent); }
+
 /* forms: one field per row */
 .form-col {
   display: flex;

@@ -1,13 +1,14 @@
 // cllama web console — settings tab.
 //
-// Renders the server's in-memory system configuration (GET /admin/config):
-// queue depth, done/failed retention, the generation timeout, and the two
-// auth tokens. app.js drives refresh() on "hello" and "config" SSE topics;
-// the tab also has a manual refresh.
+// Renders the server's in-memory system configuration (GET /admin/config),
+// one row-div per setting; every setting is editable inline (✏️) and saved
+// to the server with a partial PUT /admin/config, applying immediately.
+// app.js drives refresh() on "hello" and "config" SSE topics; the tab also
+// has a manual refresh.
 //
-// Tokens display masked (••••): the 👁 button reveals the plain text
-// (fetched lazily from /admin/config/secret/<name>) and 🙈 masks it again;
-// ✏️ opens a dialog to change or clear the token.
+// Auth tokens display masked (••••): 👁 reveals the plain text (fetched
+// lazily from /admin/config/secret/<name>), 🙈 masks it again; editing a
+// token accepts an empty value to disable the respective auth.
 // Exposes a single global: Settings.
 window.Settings = (() => {
   "use strict";
@@ -15,7 +16,8 @@ window.Settings = (() => {
   const el = UI.el;
   const badge = UI.badge;
 
-  // Retention values are whole seconds on the wire:
+  // ── value formatters ────────────────────────────────────────────────────
+  // Retentions are whole seconds on the wire:
   // -1 = stay in the queue forever (manual removal only),
   //  0 = leave the queue immediately,
   // >0 = stay in the queue that long, then get purged.
@@ -31,45 +33,54 @@ window.Settings = (() => {
     return badge(sec + " s", "ok");
   }
 
-  const ROWS = [
+  // ── setting definitions ─────────────────────────────────────────────────
+  const SETTINGS = [
     {
+      kind: "int",
       key: "max_queue",
-      name: "Max queue size",
+      label: "Max queue size",
+      min: 0,
       desc: "Requests held while no backend serves their model (0 disables queueing).",
-      render: (v) => (v === 0 ? badge("queueing off", "muted") : String(v)),
+      fmt: (v) => (v === 0 ? badge("queueing off", "muted") : String(v)),
     },
     {
+      kind: "int",
       key: "done_retention_sec",
-      name: "Done retention",
+      label: "Done retention",
+      min: -1,
       desc: "How long completed requests stay in the queue: -1 forever (manual removal), 0 no stay (default), >0 seconds to keep.",
-      render: fmtRetention,
+      fmt: fmtRetention,
     },
     {
+      kind: "int",
       key: "failed_retention_sec",
-      name: "Failed retention",
+      label: "Failed retention",
+      min: -1,
       desc: "Same semantics for failed requests.",
-      render: fmtRetention,
+      fmt: fmtRetention,
     },
     {
+      kind: "int",
       key: "gen_timeout_sec",
-      name: "Generation timeout",
+      label: "Generation timeout",
+      min: 0,
       desc: "Abort an upstream generation request after this many seconds (0 = no timeout). Applies to clients of backends registered after a change.",
-      render: fmtTimeout,
+      fmt: fmtTimeout,
     },
-  ];
-
-  // Auth tokens: masked by default, 👁 reveals, ✏️ changes.
-  const SECRET_ROWS = [
     {
+      kind: "secret",
       key: "api_token",
       flag: "has_api_token",
       label: "API token",
+      placeholder: "new token (empty disables auth)",
       desc: "Bearer token required on LLM API and model-list requests (seeds from -token). Empty disables auth; changes apply immediately.",
     },
     {
+      kind: "secret",
       key: "parent_auth",
       flag: "has_parent_auth",
       label: "Parent auth token",
+      placeholder: "new token (empty disables tunnel auth)",
       desc: "Token child cllama servers must present to tunnel into this server (seeds from -parentauth). Empty disables tunnel auth.",
     },
   ];
@@ -83,85 +94,115 @@ window.Settings = (() => {
     return b;
   }
 
-  function openSecretDialog(key, label) {
-    const input = el("input");
-    input.type = "text";
-    input.autocomplete = "new-password";
-    input.spellcheck = false;
-    input.placeholder = "new token (empty disables auth)";
+  // ── one row-div per setting, inline editing ─────────────────────────────
+  function renderSetting(cfg, def) {
+    const root = el("div", "setting");
 
-    UI.modal({
-      title: "Change " + label,
-      content: input,
-      actions: [
-        { label: "Cancel", onClick: (close) => close() },
-        {
-          label: "Save",
-          className: "primary",
-          onClick: async (close) => {
-            try {
-              await API.updateConfig({ [key]: input.value });
-              UI.toast(label + " updated");
-              close();
-            } catch (err) {
-              UI.toast("update failed: " + err.message, "bad");
-            }
-            refresh();
-          },
-        },
-      ],
-    });
-    input.focus();
-  }
+    const nameCell = el("div", "setting-name");
+    nameCell.textContent = def.label;
 
-  function renderSecretRow(cfg, row) {
-    const tr = el("tr");
+    const body = el("div", "setting-body");
+    const valueRow = el("div", "setting-value mono");
+    const desc = el("p", "setting-desc");
+    desc.textContent = def.desc;
+    body.append(valueRow, desc);
+    root.append(nameCell, body);
 
-    const tdName = el("td");
-    tdName.textContent = row.label;
+    let revealed = null; // cached plain token text while 👁 is active; null = masked
 
-    const tdValue = el("td", "mono");
-    const set = !!cfg[row.flag];
-    let revealed = null; // cached plain text while 👁 is active; null = masked
-
-    async function toggle() {
+    async function toggleReveal() {
       if (revealed !== null) {
         revealed = null; // mask again
-        paint();
+        paintView();
         return;
       }
       try {
-        const data = await API.configSecret(row.key);
+        const data = await API.configSecret(def.key);
         revealed = data.value || "";
       } catch (err) {
         UI.toast("reveal failed: " + err.message, "bad");
         return;
       }
-      paint();
+      paintView();
     }
 
-    function paint() {
-      const kids = [];
-      if (!set) {
-        kids.push(badge("no token (auth off)", "muted"));
+    function paintView() {
+      valueRow.replaceChildren();
+      valueRow.appendChild(iconButton("✏️", "Edit", startEdit));
+      if (def.kind === "secret") {
+        if (!cfg[def.flag]) {
+          valueRow.appendChild(badge("no token (auth off)", "muted"));
+        } else {
+          valueRow.appendChild(
+            iconButton(revealed === null ? "👁️" : "🙈", revealed === null ? "Reveal" : "Hide", toggleReveal)
+          );
+          const display = el("span");
+          display.textContent = revealed === null ? "••••••••" : revealed || "(empty)";
+          valueRow.appendChild(display);
+        }
       } else {
-        const display = el("span");
-        display.textContent = revealed === null ? "••••••••" : revealed || "(empty)";
-        kids.push(display);
-        kids.push(document.createTextNode(" "));
-        kids.push(iconButton(revealed === null ? "👁️" : "🙈", revealed === null ? "Reveal" : "Hide", toggle));
+        const rendered = def.fmt(cfg[def.key]);
+        if (rendered instanceof Node) valueRow.appendChild(rendered);
+        else valueRow.appendChild(document.createTextNode(String(rendered)));
       }
-      kids.push(document.createTextNode(" "));
-      kids.push(iconButton("✏️", set ? "Change" : "Set", () => openSecretDialog(row.key, row.label)));
-      tdValue.replaceChildren(...kids);
     }
-    paint();
 
-    const tdDesc = el("td", "hint");
-    tdDesc.textContent = row.desc;
+    function startEdit() {
+      const form = el("div", "setting-edit");
+      const input = el("input");
+      if (def.kind === "int") {
+        input.type = "number";
+        input.min = String(def.min);
+        input.step = "1";
+        input.value = String(cfg[def.key]);
+      } else {
+        input.type = "text";
+        input.autocomplete = "new-password";
+        input.spellcheck = false;
+        input.placeholder = def.placeholder;
+      }
+      const saveBtn = el("button", "primary", "💾 Save");
+      saveBtn.type = "button";
+      const cancelBtn = el("button", null, "Cancel");
+      cancelBtn.type = "button";
+      form.append(saveBtn, cancelBtn, input);
+      valueRow.replaceChildren(form);
+      input.focus();
+      input.select();
 
-    tr.append(tdName, tdValue, tdDesc);
-    return tr;
+      async function doSave() {
+        let value;
+        if (def.kind === "int") {
+          value = Number.parseInt(input.value, 10);
+          if (!Number.isInteger(value) || value < def.min) {
+            UI.toast(def.label + ": enter a whole number ≥ " + def.min, "bad");
+            return;
+          }
+        } else {
+          value = input.value;
+        }
+        saveBtn.disabled = true;
+        try {
+          // Partial update: the server keeps every other setting.
+          await API.updateConfig({ [def.key]: value });
+          UI.toast(def.label + " saved");
+          refresh();
+        } catch (err) {
+          saveBtn.disabled = false;
+          UI.toast("save failed: " + err.message, "bad");
+        }
+      }
+
+      saveBtn.addEventListener("click", doSave);
+      cancelBtn.addEventListener("click", paintView);
+      input.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") doSave();
+        else if (ev.key === "Escape") paintView();
+      });
+    }
+
+    paintView();
+    return root;
   }
 
   async function refresh() {
@@ -173,27 +214,9 @@ window.Settings = (() => {
       return;
     }
 
-    const tbody = document.querySelector("#settings-rows");
-    if (!tbody) return;
-    tbody.replaceChildren();
-    for (const row of ROWS) {
-      const tr = el("tr");
-
-      const tdName = el("td");
-      tdName.textContent = row.name;
-
-      const tdValue = el("td");
-      const rendered = row.render(cfg[row.key]);
-      if (rendered instanceof Node) tdValue.appendChild(rendered);
-      else tdValue.appendChild(document.createTextNode(String(rendered)));
-
-      const tdDesc = el("td", "hint");
-      tdDesc.textContent = row.desc;
-
-      tr.append(tdName, tdValue, tdDesc);
-      tbody.appendChild(tr);
-    }
-    for (const row of SECRET_ROWS) tbody.appendChild(renderSecretRow(cfg, row));
+    const list = document.querySelector("#settings-list");
+    if (!list) return;
+    list.replaceChildren(...SETTINGS.map((def) => renderSetting(cfg, def)));
   }
 
   document.querySelector("#settings-refresh-btn")?.addEventListener("click", refresh);
