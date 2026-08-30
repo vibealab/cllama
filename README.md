@@ -46,6 +46,9 @@ reverse tunnel. No inbound connections to the GPU machines are needed.
   exposed by the proxy.
 - **Hierarchies / tunneling**: child cllama servers dial out to a parent and
   serve its traffic using their local backends — perfect for GPUs behind NAT.
+- **Web UI**: a single-page dashboard embedded in the binary (served at
+  `/ui`): a live request-queue view and a model ↔ backend map with
+  register / unregister / enable / disable, updated over SSE.
 - **Auth**: optional bearer token for API traffic (`-token`) and separate
   token for child tunnel connections (`-parentauth`).
 
@@ -230,6 +233,7 @@ executed on the child's local Ollama. Details:
 | `-parentauth` | — | token child cllama servers must present to tunnel into this server |
 | `-token` | — | bearer token required on all LLM API and model-list requests |
 | `-gen-timeout` | `0` | seconds before aborting an upstream generation request (0 = none) |
+| `-debug-ui` | — | serve the web UI from this directory instead of the embedded assets (development) |
 
 ## Endpoints
 
@@ -245,8 +249,36 @@ executed on the child's local Ollama. Details:
 | `GET/POST /admin/backends` | list / register backends |
 | `DELETE /admin/backends/<id>` | unregister a backend |
 | `POST /admin/backends/<id>/bindings` | bind another model to a backend |
+| `POST /admin/backends/<id>/enabled` | enable/disable a backend (incl. child tunnels), body `{"enabled": true\|false}` |
 | `GET /admin/models` | mock models with their backend bindings |
 | `GET/DELETE /admin/parents` | inspect / disconnect tunnel parent connections |
+| `GET /admin/queue` | requests waiting in the no-backend queue |
+| `GET /admin/events` | Server-Sent Events stream of admin state changes |
+| `GET /ui` | embedded web dashboard |
+
+## Web UI
+
+Every cllama server embeds a small dashboard, served at `http://<listen>/ui/`:
+
+- **Request queue** tab — live view of the requests waiting for a backend
+  (model, wait time, queue depth), from `GET /admin/queue`.
+- **Models & backends** tab — which mock model maps to which upstream server
+  or connected child cllama tunnel, with register / unregister and
+  enable / disable controls, plus the child side's parent connections.
+
+The page subscribes to `GET /admin/events` (Server-Sent Events); the server
+pushes a `queue`, `backends` or `parents` topic whenever state changes, so
+the UI updates in real time without polling. Like the rest of `/admin`, the
+UI and these endpoints are unauthenticated — keep them off untrusted
+networks.
+
+While developing the dashboard, `-debug-ui` serves it straight from the
+source tree instead of the compiled-in copy, so edits are visible on a
+plain browser refresh:
+
+```sh
+go run . -debug-ui ./ui
+```
 
 ## Security notes
 

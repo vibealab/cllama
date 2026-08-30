@@ -15,11 +15,13 @@ import (
 // Admin API for registering/unregistering upstream LLM servers and binding
 // their models to this proxy's mock models (see the -name flag).
 //
-// GET    /admin/backends       - list all registered backends
-// POST   /admin/backends       - register a backend (one model binding per call)
-// DELETE /admin/backends/<id>  - unregister a backend
-// POST   /admin/backends/<id>/bindings - add another model binding to a backend
-// GET    /admin/models         - list mock models with their bindings
+// GET    /admin/backends          - list all registered backends
+// POST   /admin/backends          - register a backend (one model binding per call)
+// DELETE /admin/backends/<id>     - unregister a backend
+// POST   /admin/backends/<id>/bindings  - add another model binding to a backend
+// POST   /admin/backends/<id>/enabled   - enable/disable a backend {"enabled": bool}
+// GET    /admin/models            - list mock models with their bindings
+// GET    /admin/queue             - requests waiting for a backend
 
 // registerRequest is the admin body for registering an upstream server.
 type registerRequest struct {
@@ -67,9 +69,58 @@ func (s *Server) handleAdminBackendDetail(w http.ResponseWriter, r *http.Request
 		}
 	case sub == "bindings" && r.Method == http.MethodPost:
 		s.bindModel(w, r, id)
+	case sub == "enabled" && r.Method == http.MethodPost:
+		s.setBackendEnabled(w, r, id)
 	default:
 		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+// setBackendEnabled enables or disables a backend (including connected child
+// cllama tunnel backends) without unregistering it.
+func (s *Server) setBackendEnabled(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if !s.router.SetBackendDisabled(id, !body.Enabled) {
+		respondJSON(w, http.StatusNotFound, map[string]string{"error": "backend not found"})
+		return
+	}
+	for _, be := range s.router.Backends() {
+		if be.ID == id {
+			respondJSON(w, http.StatusOK, backendView(be))
+			return
+		}
+	}
+}
+
+// ── Queue inspection ──────────────────────────────────────────────────────
+
+// handleAdminQueue lists the requests currently waiting because no backend
+// serves their model (see Router.Acquire).
+func (s *Server) handleAdminQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	items, capacity := s.router.QueueStatus()
+	requests := make([]map[string]interface{}, 0, len(items))
+	for _, q := range items {
+		requests = append(requests, map[string]interface{}{
+			"id":      q.ID,
+			"model":   q.Model,
+			"wait_ms": time.Since(q.At).Milliseconds(),
+		})
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"requests": requests,
+		"queued":   len(requests),
+		"capacity": capacity,
+	})
 }
 
 // ── List backends ────────────────────────────────────────────────────────────
@@ -200,6 +251,7 @@ func (s *Server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
 					"type":           be.Type,
 					"endpoint":       be.Endpoint,
 					"upstream_model": upstream,
+					"disabled":       be.Disabled,
 				})
 			}
 		}
@@ -231,6 +283,7 @@ func backendView(be *BackendEntry) map[string]interface{} {
 		"bindings":     bindings,
 		"capabilities": be.Capabilities,
 		"healthy":      be.Healthy(),
+		"disabled":     be.Disabled,
 	}
 }
 

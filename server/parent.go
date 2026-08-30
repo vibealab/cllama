@@ -130,6 +130,7 @@ func (m *ParentManager) Add(rawURL string) (*ParentConn, error) {
 	if started {
 		m.startConn(pc)
 	}
+	m.srv.events.emit(topicParents)
 	return pc, nil
 }
 
@@ -143,6 +144,7 @@ func (m *ParentManager) Remove(id string) bool {
 		return false
 	}
 	pc.cancel()
+	m.srv.events.emit(topicParents)
 	return true
 }
 
@@ -287,6 +289,7 @@ func (pc *ParentConn) markConnected() {
 	pc.lastErr = ""
 	pc.mu.Unlock()
 	log.Printf("[parent] connected to parent %s model %q (connection #%d)", pc.Base, pc.Model, n)
+	pc.srv.events.emit(topicParents)
 }
 
 func (pc *ParentConn) markDisconnected(err error) {
@@ -299,6 +302,7 @@ func (pc *ParentConn) markDisconnected(err error) {
 	if err != nil {
 		log.Printf("[parent] disconnected from parent %s model %q: %v", pc.Base, pc.Model, err)
 	}
+	pc.srv.events.emit(topicParents)
 }
 
 // ── Serving parent requests ──────────────────────────────────────────────────

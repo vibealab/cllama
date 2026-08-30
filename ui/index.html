@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cllama</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header>
+  <h1>cllama</h1>
+  <div class="sub" id="subtitle">LLM proxy console</div>
+  <div class="conn-status" id="conn-status" title="live updates via /admin/events (SSE)">connecting…</div>
+</header>
+
+<nav id="tabs">
+  <button class="tab active" data-tab="queue" type="button">Request queue</button>
+  <button class="tab" data-tab="models" type="button">Models &amp; backends</button>
+</nav>
+
+<main>
+  <!-- ── Tab 1: request queue ─────────────────────────────────────────── -->
+  <section id="tab-queue" class="panel">
+    <div class="cards">
+      <div class="card stat">
+        <div class="stat-num" id="stat-queued">0</div>
+        <div class="stat-label">queued requests</div>
+      </div>
+      <div class="card stat">
+        <div class="stat-num" id="stat-capacity">0</div>
+        <div class="stat-label">queue capacity</div>
+      </div>
+      <div class="card stat">
+        <div class="stat-num" id="stat-models">0</div>
+        <div class="stat-label">models exposed</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Waiting for a backend</h2>
+      <p class="hint">Requests block here while no healthy backend serves their model. They are dispatched as soon as one registers.</p>
+      <table>
+        <thead>
+          <tr><th>Request</th><th>Model</th><th>Waiting</th></tr>
+        </thead>
+        <tbody id="queue-rows"></tbody>
+      </table>
+      <div class="empty" id="queue-empty">Queue is empty — nothing is waiting for a backend.</div>
+    </div>
+  </section>
+
+  <!-- ── Tab 2: models ↔ backends map ─────────────────────────────────── -->
+  <section id="tab-models" class="panel hidden">
+    <div class="card">
+      <h2>Model map</h2>
+      <p class="hint">Each mock model exposed by this proxy and the upstream servers or child cllama tunnels currently serving it.</p>
+      <div id="model-map"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Backends</h2>
+        <button type="button" class="primary" id="register-backend-btn">🔗 Register backend</button>
+      </div>
+      <p class="hint">Upstream Ollama / OpenAI servers and child cllama servers connected through the reverse tunnel.</p>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Type</th><th>Endpoint</th><th>Model bindings</th><th>Capabilities</th><th>State</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="backend-rows"></tbody>
+      </table>
+      <div class="empty" id="backend-empty">No backends registered yet.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Parent connections <span class="opt">this server acting as a child</span></h2>
+        <button type="button" class="primary" id="connect-parent-btn">🔗 Connect parent</button>
+      </div>
+      <p class="hint">Outbound tunnels to parent cllama servers (<code>-parent</code>).</p>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Parent</th><th>Model</th><th>Rewrites to</th><th>Status</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="parent-rows"></tbody>
+      </table>
+      <div class="empty" id="parent-empty">No parent connections — this server does not tunnel to any parent.</div>
+    </div>
+  </section>
+</main>
+
+<script src="js/component.js"></script>
+<script src="js/api.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

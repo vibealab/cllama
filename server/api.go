@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"cllama/ui"
 )
 
 // HandleFunc registers all HTTP routes on the given mux.
@@ -40,6 +42,12 @@ func (s *Server) HandleFunc(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/backends", s.handleAdminBackends)
 	mux.HandleFunc("/admin/backends/", s.handleAdminBackendDetail)
 	mux.HandleFunc("/admin/models", s.handleAdminModels)
+	mux.HandleFunc("/admin/queue", s.handleAdminQueue)
+	mux.HandleFunc("/admin/events", s.handleAdminEvents)
+
+	// Web UI: embedded static assets by default, or the -debug-ui directory
+	// when one was configured via Server.UseUI.
+	mux.Handle("/ui/", http.StripPrefix("/ui", ui.Serve(s.uiFS)))
 
 	// Parent side: child cllama servers connect here (reverse tunnel)
 	mux.HandleFunc("/admin/parent/stream", s.handleTunnelStream)

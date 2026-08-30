@@ -33,6 +33,7 @@ func main() {
 	parentAuth := flag.String("parentauth", "", "token child cllama servers must present to connect as tunnel backends")
 	apiToken := flag.String("token", "", "bearer token required on LLM API and model-list requests")
 	genTimeoutSec := flag.Int("gen-timeout", 0, "seconds before aborting an upstream generation request (0 = no timeout)")
+	debugUI := flag.String("debug-ui", "", "serve the web UI from this directory instead of the embedded assets (development; point at the ui/ source folder)")
 	flag.Parse()
 
 	var models []string
@@ -45,6 +46,13 @@ func main() {
 	srv, err := server.New(*maxQueue, models, parents, *parentAuth, *apiToken, time.Duration(*genTimeoutSec)*time.Second)
 	if err != nil {
 		log.Fatalf("failed to create server: %v", err)
+	}
+
+	if *debugUI != "" {
+		if st, err := os.Stat(*debugUI); err != nil || !st.IsDir() {
+			log.Fatalf("-debug-ui: %s is not a directory", *debugUI)
+		}
+		srv.UseUI(os.DirFS(*debugUI))
 	}
 
 	// Note: no global Read/Write timeouts — chat streams and parent/child
@@ -73,6 +81,9 @@ func main() {
 			fmt.Printf("upstream generation timeout: %ds\n", *genTimeoutSec)
 		} else {
 			fmt.Println("upstream generation timeout: none (-gen-timeout <sec> to enable)")
+		}
+		if *debugUI != "" {
+			fmt.Printf("web UI served from %s (debug mode, embedded assets disabled)\n", *debugUI)
 		}
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http serve: %v", err)

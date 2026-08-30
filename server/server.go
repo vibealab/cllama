@@ -1,14 +1,24 @@
 package server
 
 import (
+	"io/fs"
 	"log"
 	"net/http"
 	"time"
+
+	"cllama/ui"
 )
 
 // Server holds the HTTP state for the cllama proxy.
 type Server struct {
 	router *Router
+
+	// events broadcasts state changes to the web UI over SSE.
+	events *eventHub
+
+	// uiFS serves the /ui/ static assets; defaults to the embedded copy
+	// and can be replaced via UseUI (see the -debug-ui flag).
+	uiFS fs.FS
 
 	// Parent-side: pending tunneled requests from child cllama servers.
 	calls *callRegistry
@@ -37,8 +47,11 @@ type Server struct {
 // apiToken, when non-empty, is the bearer token required on LLM API requests.
 // genTimeout bounds each upstream backend request (0 = no timeout).
 func New(maxQueue int, models []string, parentURLs []string, parentAuth, apiToken string, genTimeout time.Duration) (*Server, error) {
+	events := newEventHub()
 	s := &Server{
-		router:     NewRouter(maxQueue, models),
+		router:     NewRouter(maxQueue, models, events),
+		events:     events,
+		uiFS:       ui.FS(),
 		calls:      newCallRegistry(),
 		parentAuth: parentAuth,
 		apiToken:   apiToken,
@@ -54,6 +67,16 @@ func New(maxQueue int, models []string, parentURLs []string, parentAuth, apiToke
 	}
 	s.parents.Start()
 	return s, nil
+}
+
+// UseUI serves the web UI from the given filesystem (same layout as the
+// embedded assets: index.html, css/, js/) instead of the embedded copy.
+// Call before Handler. A nil fsys restores the embedded assets.
+func (s *Server) UseUI(fsys fs.FS) {
+	if fsys == nil {
+		fsys = ui.FS()
+	}
+	s.uiFS = fsys
 }
 
 // Handler returns the HTTP handler with all routes registered.

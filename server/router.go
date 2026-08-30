@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,9 @@ type BackendEntry struct {
 	Token    string            // auth token (secret; never exposed by admin APIs)
 	Bindings map[string]string // mock model name -> upstream model name
 	LastUsed int64
+	// Disabled backends stay registered but take no traffic until
+	// re-enabled (managed via POST /admin/backends/<id>/enabled).
+	Disabled bool
 	// Capabilities advertised to clients via /api/show (e.g. "vision",
 	// "thinking"); empty means DefaultCapabilities.
 	Capabilities []string
@@ -63,18 +67,54 @@ type Router struct {
 	models []string // mock model names exposed by this proxy
 
 	queueSlots chan struct{} // semaphore limiting concurrently queued requests
+
+	// events broadcasts state changes to the web UI (may be nil in tests).
+	events *eventHub
+
+	// queued tracks the requests currently waiting for a backend so the
+	// admin API and UI can show what is in the queue.
+	queueMu sync.Mutex
+	queued  map[string]*queuedRequest
+}
+
+// queuedRequest is one request waiting in the no-backend queue.
+type queuedRequest struct {
+	ID    string
+	Model string
+	At    time.Time
 }
 
 // NewRouter creates a router exposing the given mock models with the given
-// maximum queue depth.
-func NewRouter(maxQueue int, models []string) *Router {
+// maximum queue depth. events, when non-nil, receives change topics for
+// the web UI.
+func NewRouter(maxQueue int, models []string, events *eventHub) *Router {
 	r := &Router{
 		models: models,
+		events: events,
+		queued: make(map[string]*queuedRequest),
 	}
 	if maxQueue > 0 {
 		r.queueSlots = make(chan struct{}, maxQueue)
 	}
 	return r
+}
+
+// QueueStatus returns the requests currently waiting for a backend (newest
+// first) and the queue capacity (0 means queueing is disabled).
+func (r *Router) QueueStatus() ([]queuedRequest, int) {
+	r.queueMu.Lock()
+	out := make([]queuedRequest, 0, len(r.queued))
+	for _, q := range r.queued {
+		out = append(out, *q)
+	}
+	r.queueMu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
+
+	capacity := 0
+	if r.queueSlots != nil {
+		capacity = cap(r.queueSlots)
+	}
+	return out, capacity
 }
 
 // Models returns the mock model names this proxy exposes.
@@ -135,32 +175,51 @@ func (r *Router) KnownModel(name string) bool {
 // AddBackend registers a new backend.
 func (r *Router) AddBackend(be *BackendEntry) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.backends = append(r.backends, be)
 	log.Printf("[backend] registered %s type=%s endpoint=%s bindings=%s (%d backends total)",
 		be.ID, be.Type, be.Endpoint, formatBindings(be.Bindings), len(r.backends))
+	r.mu.Unlock()
+	r.events.emit(topicBackends)
 }
 
 // RemoveBackend unregisters a backend by ID; it reports whether one was found.
 func (r *Router) RemoveBackend(id string) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	for i, be := range r.backends {
 		if be.ID == id {
 			r.backends = append(r.backends[:i], r.backends[i+1:]...)
 			log.Printf("[backend] unregistered %s type=%s endpoint=%s (%d backends remain)",
 				be.ID, be.Type, be.Endpoint, len(r.backends))
+			r.mu.Unlock()
+			r.events.emit(topicBackends)
 			return true
 		}
 	}
 	log.Printf("[backend] unregister failed: %q not found", id)
+	r.mu.Unlock()
+	return false
+}
+
+// SetBackendDisabled enables or disables a backend without unregistering
+// it; it reports whether the backend was found.
+func (r *Router) SetBackendDisabled(id string, disabled bool) bool {
+	r.mu.Lock()
+	for _, be := range r.backends {
+		if be.ID == id {
+			be.Disabled = disabled
+			log.Printf("[backend] %s disabled=%t", id, disabled)
+			r.mu.Unlock()
+			r.events.emit(topicBackends)
+			return true
+		}
+	}
+	r.mu.Unlock()
 	return false
 }
 
 // Bind adds a mock-model -> upstream-model binding to an existing backend.
 func (r *Router) Bind(id, mockModel, upstreamModel string) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	for _, be := range r.backends {
 		if be.ID == id {
 			if be.Bindings == nil {
@@ -168,10 +227,13 @@ func (r *Router) Bind(id, mockModel, upstreamModel string) bool {
 			}
 			be.Bindings[mockModel] = upstreamModel
 			log.Printf("[backend] %s bound model %q -> upstream %q", id, mockModel, upstreamModel)
+			r.mu.Unlock()
+			r.events.emit(topicBackends)
 			return true
 		}
 	}
 	log.Printf("[backend] bind failed: backend %q not found", id)
+	r.mu.Unlock()
 	return false
 }
 
@@ -205,6 +267,9 @@ func (r *Router) NextBackendForModel(mockModel string) (*BackendEntry, string, b
 	}
 	matches := make([]match, 0, len(r.backends))
 	for _, be := range r.backends {
+		if be.Disabled {
+			continue
+		}
 		if up, ok := be.UpstreamModel(mockModel); ok {
 			matches = append(matches, match{be, up})
 		}
@@ -239,6 +304,21 @@ func (r *Router) Acquire(ctx context.Context, mockModel string) (*BackendEntry, 
 		log.Printf("[route] model %q: no backend available and request queue is full", mockModel)
 		return nil, "", ErrQueueFull
 	}
+
+	// Publish the request in the queue registry so the admin API and UI
+	// can show what is waiting.
+	entry := &queuedRequest{ID: generateID(), Model: mockModel, At: time.Now()}
+	r.queueMu.Lock()
+	r.queued[entry.ID] = entry
+	r.queueMu.Unlock()
+	r.events.emit(topicQueue)
+	defer func() {
+		r.queueMu.Lock()
+		delete(r.queued, entry.ID)
+		r.queueMu.Unlock()
+		r.events.emit(topicQueue)
+	}()
+
 	log.Printf("[route] model %q: no backend available, request queued", mockModel)
 
 	ticker := time.NewTicker(250 * time.Millisecond)
