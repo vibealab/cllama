@@ -1,0 +1,83 @@
+# What are cllama's APIs?
+
+A cllama server speaks three API families on its single `-listen` port:
+
+1. **LLM APIs** — the proxied model traffic, in both the Ollama and the
+   OpenAI wire formats (converted on the fly; see
+   [README](../README.md)).
+2. **Admin API** — runtime management of backends, models, settings and the
+   request queue, also used by the embedded web UI.
+3. **Tunnel endpoints** — internal endpoints used by child cllama servers
+   that dial in over the reverse tunnel.
+
+Authentication: when `-token` is set, every LLM API and model-list request
+must present `Authorization: Bearer <token>`. When `-parentauth` is set, it
+guards the tunnel endpoints instead. The `/admin` endpoints and the UI are
+**unauthenticated** — keep them off untrusted networks.
+
+## LLM APIs (Ollama format)
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /` | health check and exposed model list |
+| `GET /api/tags` | model list (Ollama format) |
+| `POST /api/chat`, `POST /api/generate` | chat / completion (Ollama format) |
+| `POST /api/embed`, `POST /api/embeddings` | embeddings (Ollama format) |
+
+Ollama CLI compatibility is faked where needed so `ollama run` / `ollama
+list` work against a cllama server: `GET /api/version`, `GET /api/show`
+(advertises the model's [capabilities](../README.md#chat-vs-embedding-models-capabilities)),
+`POST /api/pull` and `GET /api/tags` are implemented.
+
+## LLM APIs (OpenAI format)
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/openai/v1/models` | model list (OpenAI format) |
+| `POST /api/openai/v1/chat/completions` | chat (OpenAI format, incl. streaming) |
+| `POST /api/openai/v1/embeddings` | embeddings (OpenAI format) |
+
+Both formats serve the same backends, so a backend registered once can be
+consumed through either. Streaming works in both directions (Ollama NDJSON
+↔ OpenAI SSE conversion included).
+
+## Admin API
+
+| Endpoint | Description |
+| --- | --- |
+| `GET/POST /admin/backends` | list / register backends |
+| `DELETE /admin/backends/<id>` | unregister a backend |
+| `POST /admin/backends/<id>/bindings` | bind another model to a backend |
+| `POST /admin/backends/<id>/enabled` | enable/disable a backend (incl. child tunnels), body `{"enabled": true\|false}` |
+| `GET /admin/models` | mock models with their backend bindings |
+| `GET/PUT /admin/config` | show / update the in-memory system settings (queue depth, done/fail retention, generation timeout) |
+| `GET/DELETE /admin/parents` | inspect / disconnect tunnel parent connections |
+| `GET /admin/queue` | requests tracked in the lifecycle queue (pending / takeaway / processing / done / fail) |
+| `DELETE /admin/queue/<id>` | remove a queued request by hand (e.g. a retained done or failed one) |
+| `GET /admin/events` | Server-Sent Events stream of admin state changes |
+
+`GET /admin/events` pushes one topic line per change — `queue`, `backends`,
+`parents` or `config` (plus `hello` on connect) — so the web UI updates in
+real time without polling; consumers refetch the matching admin endpoint.
+
+`PUT /admin/config` takes whole-second values, e.g.
+`{"done_retention_sec":300,"failed_retention_sec":-1,"gen_timeout_sec":120}`:
+retentions of `-1` keep entries in the request queue forever (see the
+[request lifecycle](what-is-request-lifecycle.md)), and `gen_timeout_sec`
+of `0` means no upstream timeout.
+
+## Tunnel endpoints (internal)
+
+Used by child cllama servers connected with `-parent`; guarded by
+`-parentauth`:
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /admin/parent/stream?model=<m>` | long-lived SSE stream on which the parent pushes requests for model `m` |
+| `POST /admin/parent/response/<id>` | child posts the response back (single-shot JSON, or NDJSON with `?stream=true`) |
+
+## Web UI
+
+`GET /ui` serves the embedded single-page dashboard (request queue, model ↔
+backend map, settings), which is a client of the admin API and the events
+stream above. See the README's [Web UI section](../README.md#web-ui).

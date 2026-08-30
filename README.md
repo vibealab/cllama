@@ -183,7 +183,9 @@ curl http://localhost:11434/api/openai/v1/chat/completions -d '{
 ```
 
 Embeddings are available at `/api/embeddings` (Ollama style) and
-`/api/openai/v1/embeddings` (OpenAI style).
+`/api/openai/v1/embeddings` (OpenAI style). The full endpoint reference —
+LLM, admin, tunnel and UI — is in
+[What are cllama's APIs?](wiki/what-are-cllama-apis.md).
 
 ## Hierarchy: chaining cllama servers
 
@@ -241,26 +243,9 @@ executed on the child's local Ollama. Details:
 
 ## Endpoints
 
-| Endpoint | Description |
-| --- | --- |
-| `GET /` | health check and exposed model list |
-| `GET /api/tags` | model list (Ollama format) |
-| `POST /api/chat`, `POST /api/generate` | chat / completion (Ollama format) |
-| `POST /api/embed`, `POST /api/embeddings` | embeddings (Ollama format) |
-| `GET /api/openai/v1/models` | model list (OpenAI format) |
-| `POST /api/openai/v1/chat/completions` | chat (OpenAI format) |
-| `POST /api/openai/v1/embeddings` | embeddings (OpenAI format) |
-| `GET/POST /admin/backends` | list / register backends |
-| `DELETE /admin/backends/<id>` | unregister a backend |
-| `POST /admin/backends/<id>/bindings` | bind another model to a backend |
-| `POST /admin/backends/<id>/enabled` | enable/disable a backend (incl. child tunnels), body `{"enabled": true\|false}` |
-| `GET /admin/models` | mock models with their backend bindings |
-| `GET/PUT /admin/config` | show / update the in-memory system settings (queue depth, done/fail retention) |
-| `GET/DELETE /admin/parents` | inspect / disconnect tunnel parent connections |
-| `GET /admin/queue` | requests tracked in the lifecycle queue (pending / takeaway / processing / done / fail) |
-| `DELETE /admin/queue/<id>` | remove a queued request by hand (e.g. a retained done or failed one) |
-| `GET /admin/events` | Server-Sent Events stream of admin state changes |
-| `GET /ui` | embedded web dashboard |
+cllama's full API surface — the Ollama- and OpenAI-format LLM APIs, the
+admin API, the tunnel endpoints and the web UI — is documented in
+[What are cllama's APIs?](wiki/what-are-cllama-apis.md).
 
 ## Web UI
 
@@ -277,10 +262,10 @@ Every cllama server embeds a small dashboard, served at `http://<listen>/ui/`:
   `GET /admin/config`.
 
 The page subscribes to `GET /admin/events` (Server-Sent Events); the server
-pushes a `queue`, `backends` or `parents` topic whenever state changes, so
-the UI updates in real time without polling. Like the rest of `/admin`, the
-UI and these endpoints are unauthenticated — keep them off untrusted
-networks.
+pushes a `queue`, `backends`, `parents` or `config` topic whenever state
+changes, so the UI updates in real time without polling. Like the rest of
+`/admin`, the UI and these endpoints are unauthenticated — keep them off
+untrusted networks.
 
 While developing the dashboard, `-debug-ui` serves it straight from the
 source tree instead of the compiled-in copy, so edits are visible on a
