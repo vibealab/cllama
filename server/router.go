@@ -97,6 +97,18 @@ type Router struct {
 type RequestHandle struct {
 	router *Router
 	entry  *queuedRequest
+	ctx    context.Context
+}
+
+// Context returns the call context for this request. It derives from the
+// incoming request context and is additionally cancelled when an admin
+// removes the request from the queue, so upstream backend calls must use it
+// instead of the caller's original context.
+func (h *RequestHandle) Context() context.Context {
+	if h == nil || h.ctx == nil {
+		return context.Background()
+	}
+	return h.ctx
 }
 
 // RequestState is the lifecycle state of an LLM request tracked in the
@@ -140,6 +152,11 @@ type queuedRequest struct {
 	// EndedAt is when the request reached a terminal state (done or
 	// fail); it drives retention expiry.
 	EndedAt time.Time
+	// cancel aborts the request's in-flight work (queue wait and upstream
+	// generation). Set by Acquire; invoked when an admin removes the entry
+	// from the queue (see RemoveQueued) or it is released. Calling it after
+	// the request finished is a no-op. Guarded by queueMu once stored.
+	cancel context.CancelFunc
 }
 
 // terminalRetention returns how long a request in the given terminal state
@@ -400,13 +417,25 @@ func (r *Router) NextBackendForModel(mockModel string) (*BackendEntry, string, b
 // or the queue is full. On error the handle is nil and nothing remains
 // queued.
 func (r *Router) Acquire(ctx context.Context, mockModel string) (*BackendEntry, string, *RequestHandle, error) {
-	// Every request enters the queue as soon as it arrives.
-	entry := &queuedRequest{ID: generateID(), Model: mockModel, State: StatePending, At: time.Now()}
+	// Every request enters the queue as soon as it arrives. callCtx derives
+	// from the caller's context and is additionally cancelled when the entry
+	// is removed from the queue, aborting queue waits and in-flight
+	// generation (see RequestHandle.Context and RemoveQueued).
+	callCtx, cancel := context.WithCancel(ctx)
+	entry := &queuedRequest{ID: generateID(), Model: mockModel, State: StatePending, At: time.Now(), cancel: cancel}
+	defer func() {
+		// Safety net: no leak if the entry never stays queued (queue-full,
+		// cancelled wait). When it is still live the later release, Done or
+		// Fail path cancels callCtx instead.
+		if !r.queuedLive(entry) {
+			cancel()
+		}
+	}()
 	r.queueMu.Lock()
 	r.queued[entry.ID] = entry
 	r.queueMu.Unlock()
 	r.events.emit(topicQueue)
-	h := &RequestHandle{router: r, entry: entry}
+	h := &RequestHandle{router: r, entry: entry, ctx: callCtx}
 
 	// take marks the request as taken away for the given backend.
 	take := func(be *BackendEntry) {
@@ -449,9 +478,9 @@ func (r *Router) Acquire(ctx context.Context, mockModel string) (*BackendEntry, 
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-callCtx.Done():
 			r.release(entry)
-			return nil, "", nil, ctx.Err()
+			return nil, "", nil, callCtx.Err()
 		case <-ticker.C:
 			if be, up, ok := r.NextBackendForModel(mockModel); ok {
 				take(be)
@@ -475,14 +504,33 @@ func (r *Router) transition(entry *queuedRequest, mutate func(*queuedRequest)) {
 	}
 }
 
-// release removes a request from the queue entirely.
+// release removes a request from the queue entirely. If the request was
+// still in flight this also cancels its call context, aborting any queue
+// wait or upstream generation still running for it.
 func (r *Router) release(entry *queuedRequest) {
 	r.queueMu.Lock()
 	_, live := r.queued[entry.ID]
 	delete(r.queued, entry.ID)
 	r.queueMu.Unlock()
 	if live {
+		entry.cancelNow()
 		r.events.emit(topicQueue)
+	}
+}
+
+// queuedLive reports whether the entry is still tracked in the queue.
+func (r *Router) queuedLive(entry *queuedRequest) bool {
+	r.queueMu.Lock()
+	defer r.queueMu.Unlock()
+	_, ok := r.queued[entry.ID]
+	return ok
+}
+
+// cancelNow invokes the entry's cancel func; safe to call more than once
+// and after the request finished.
+func (q *queuedRequest) cancelNow() {
+	if q.cancel != nil {
+		q.cancel()
 	}
 }
 
@@ -513,6 +561,8 @@ func (h *RequestHandle) Done() {
 		q.State = StateDone
 		q.EndedAt = time.Now()
 	})
+	// Terminal: release the call context even though the entry lingers.
+	h.entry.cancelNow()
 }
 
 // Fail marks the request as failed. It then lingers in the queue per the
@@ -536,17 +586,22 @@ func (h *RequestHandle) Fail(cause error) {
 		q.Error = msg
 		q.EndedAt = time.Now()
 	})
+	// Terminal: release the call context even though the entry lingers.
+	h.entry.cancelNow()
 }
 
 // RemoveQueued drops a request from the queue regardless of its state
 // (manual admin action, e.g. purging a failed request kept forever);
-// it reports whether one was found.
+// it reports whether one was found. Removing a request that is still
+// pending or processing additionally cancels its call context, which
+// aborts the queue wait or stops the in-flight upstream generation.
 func (r *Router) RemoveQueued(id string) bool {
 	r.queueMu.Lock()
-	_, ok := r.queued[id]
+	q, ok := r.queued[id]
 	delete(r.queued, id)
 	r.queueMu.Unlock()
 	if ok {
+		q.cancelNow()
 		r.events.emit(topicQueue)
 	}
 	return ok

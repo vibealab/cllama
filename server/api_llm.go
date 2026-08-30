@@ -37,6 +37,9 @@ func (s *Server) execChat(ctx context.Context, req *client.ChatRequest) (*client
 	log.Printf("[route] chat %q -> backend %s (%s %s) as upstream model %q stream=false",
 		mockModel, be.ID, be.Type, be.Endpoint, upstreamModel)
 	req.Model = upstreamModel
+	// Use the handle's call context so removing the request from the queue
+	// (admin UI / API) aborts the upstream generation and ends this response.
+	ctx = rq.Context()
 
 	rq.MarkProcessing()
 	resp, err := be.client.Chat(ctx, req)
@@ -62,6 +65,9 @@ func (s *Server) execChatStream(ctx context.Context, req *client.ChatRequest, em
 	log.Printf("[route] chat %q -> backend %s (%s %s) as upstream model %q stream=true",
 		mockModel, be.ID, be.Type, be.Endpoint, upstreamModel)
 	req.Model = upstreamModel
+	// Use the handle's call context so removing the request from the queue
+	// (admin UI / API) aborts the upstream generation and ends this stream.
+	ctx = rq.Context()
 
 	rq.MarkProcessing()
 	upstream, err := be.client.ChatStream(ctx, req)
@@ -111,6 +117,9 @@ func (s *Server) execEmbedding(ctx context.Context, model string, input interfac
 	}
 	log.Printf("[route] embed %q -> backend %s (%s %s) as upstream model %q",
 		model, be.ID, be.Type, be.Endpoint, upstreamModel)
+	// Use the handle's call context so removing the request from the queue
+	// (admin UI / API) aborts the upstream call.
+	ctx = rq.Context()
 
 	rq.MarkProcessing()
 	embeddings, err := be.client.Embeddings(ctx, upstreamModel, input)
