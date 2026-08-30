@@ -3,10 +3,11 @@
 LLM API server convertor and proxy.
 
 **cllama** is a lightweight proxy server that sits in front of one or more LLM
-backends (Ollama or any OpenAI-compatible server) and re-exposes them through
-**both** the Ollama API *and* the OpenAI API. Register a backend through either
-API, and clients can consume the same model through the other — an Ollama-only
-server becomes usable by OpenAI clients, and vice versa.
+backends (Ollama, any OpenAI-compatible server, or any Anthropic-compatible
+server) and re-exposes them through the Ollama API, the OpenAI API *and* the
+Anthropic Messages API. Register a backend through any API, and clients can
+consume the same model through the others — an Ollama-only server becomes
+usable by OpenAI and Anthropic clients, and vice versa.
 
 cllama can also be arranged in a **hierarchy**: an internet-facing cllama
 server exposes mock models, while internal cllama servers — each connected to
@@ -33,9 +34,13 @@ reverse tunnel. No inbound connections to the GPU machines are needed.
 
 ## Features
 
-- **API conversion**: one backend registration serves both APIs
+- **API conversion**: one backend registration serves all three APIs
   (Ollama `/api/chat`, `/api/generate`, `/api/embeddings` ↔ OpenAI
-  `/v1/chat/completions`, `/v1/embeddings`), including streaming.
+  `/v1/chat/completions`, `/v1/embeddings` ↔ Anthropic `/v1/messages`),
+  including streaming, tools and images.
+- **Claude Code compatible**: point Claude Code at
+  `ANTHROPIC_BASE_URL=http://<cllama>/api/anthropic` and it drives any
+  backend, Anthropic-native or not.
 - **Ollama CLI compatible**: `ollama run` / `ollama list` work against a
   cllama server (`/api/version`, `/api/show`, `/api/pull`, `/api/tags` are
   implemented).
@@ -95,6 +100,18 @@ curl -X POST http://localhost:11434/admin/backends -d '{
   "endpoint": "http://192.168.1.101:8000/v1",
   "token": "sk-…",
   "model": "llama3"
+}'
+```
+
+Or an Anthropic-compatible server (api.anthropic.com, a NewAPI gateway, …);
+`endpoint` is the server root, `token` is sent as `x-api-key`:
+
+```sh
+curl -X POST http://localhost:11434/admin/backends -d '{
+  "type": "anthropic",
+  "endpoint": "https://api.anthropic.com",
+  "token": "sk-ant-…",
+  "model": "claude-3-5-sonnet-20241022"
 }'
 ```
 
@@ -180,6 +197,11 @@ curl http://localhost:11434/api/openai/v1/chat/completions -d '{
   "model": "llama3",
   "messages": [{"role": "user", "content": "hi"}]
 }'
+
+# …or point Claude Code at the Anthropic-format endpoint
+ANTHROPIC_BASE_URL=http://localhost:11434/api/anthropic \
+ANTHROPIC_API_KEY=<cllama -token, if set> \
+claude
 ```
 
 Embeddings are available at `/api/embeddings` (Ollama style) and
@@ -243,8 +265,8 @@ executed on the child's local Ollama. Details:
 
 ## Endpoints
 
-cllama's full API surface — the Ollama- and OpenAI-format LLM APIs, the
-admin API, the tunnel endpoints and the web UI — is documented in
+cllama's full API surface — the Ollama-, OpenAI- and Anthropic-format LLM
+APIs, the admin API, the tunnel endpoints and the web UI — is documented in
 [What are cllama's APIs?](wiki/what-are-cllama-apis.md).
 
 ## Web UI

@@ -11,9 +11,10 @@ A cllama server speaks three API families on its single `-listen` port:
    that dial in over the reverse tunnel.
 
 Authentication: when `-token` is set, every LLM API and model-list request
-must present `Authorization: Bearer <token>`. When `-parentauth` is set, it
-guards the tunnel endpoints instead. The `/admin` endpoints and the UI are
-**unauthenticated** — keep them off untrusted networks.
+must present `Authorization: Bearer <token>` (the Anthropic endpoints also
+accept `x-api-key`). When `-parentauth` is set, it guards the tunnel endpoints
+instead. The `/admin` endpoints and the UI are **unauthenticated** — keep them
+off untrusted networks.
 
 ## LLM APIs (Ollama format)
 
@@ -40,6 +41,26 @@ list` work against a cllama server: `GET /api/version`, `GET /api/show`
 Both formats serve the same backends, so a backend registered once can be
 consumed through either. Streaming works in both directions (Ollama NDJSON
 ↔ OpenAI SSE conversion included).
+
+## LLM APIs (Anthropic Messages format)
+
+| Endpoint | Description |
+| --- | --- |
+| `POST /api/anthropic/v1/messages` | chat (Anthropic Messages format, incl. SSE streaming, tools / tool results, images, thinking blocks) |
+| `POST /api/anthropic/v1/messages/count_tokens` | token count (size-based estimate, enough for Claude Code's auto-compaction heuristics) |
+
+This format exists so Anthropic-native clients — most notably **Claude
+Code** — can consume any cllama backend:
+
+```sh
+ANTHROPIC_BASE_URL=http://localhost:11434/api/anthropic \
+ANTHROPIC_API_KEY=<cllama -token, if set> \
+claude
+```
+
+Requests are translated to the internal OpenAI format, routed to any backend
+type (Ollama, OpenAI, Anthropic, child tunnels) and translated back, so
+Claude Code works against non-Anthropic upstreams too.
 
 ## Admin API
 

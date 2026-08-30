@@ -274,7 +274,9 @@ func (s *Server) streamChatResponse(w http.ResponseWriter, r *http.Request, req 
 // isOllamaRoute reports whether path speaks ollama's wire format. Note that
 // /api/openai/* endpoints are OpenAI-format despite living under /api/.
 func isOllamaRoute(path string) bool {
-	return strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/api/openai/")
+	return (strings.HasPrefix(path, "/api/") &&
+		!strings.HasPrefix(path, "/api/openai/") &&
+		!strings.HasPrefix(path, "/api/anthropic/"))
 }
 
 // ── Ollama response wire types (for /api/chat) ──────────────────────────────

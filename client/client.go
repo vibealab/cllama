@@ -1,8 +1,9 @@
-// Package client provides upstream LLM clients (Ollama and OpenAI-compatible
-// servers) behind a common Client interface.
+// Package client provides upstream LLM clients (Ollama, OpenAI-compatible
+// and Anthropic-compatible servers) behind a common Client interface.
 //
 // All wire types exchanged through the interface use the OpenAI-compatible
-// JSON shapes; Ollama-specific formats are translated inside OllamaClient.
+// JSON shapes; Ollama- and Anthropic-specific formats are translated inside
+// OllamaClient and AnthropicClient.
 package client
 
 import (
@@ -38,6 +39,9 @@ type BackendType string
 const (
 	BackendOllama BackendType = "ollama"
 	BackendOpenAI BackendType = "openai"
+	// BackendAnthropic is an Anthropic Messages API compatible upstream
+	// (api.anthropic.com, NewAPI-style gateways, …). See client/anthropic.go.
+	BackendAnthropic BackendType = "anthropic"
 	// BackendTunnel is a reverse-tunnel backend: a child cllama server that
 	// dials out to this server, receives requests over an SSE stream, and
 	// POSTs results back. See server/tunnel.go.
@@ -90,6 +94,9 @@ type ChatRequest struct {
 	ToolChoice  interface{}   `json:"tool_choice,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
 	MaxTokens   int           `json:"max_tokens,omitempty"`
+	// Stop is the list of sequences that end generation (OpenAI "stop",
+	// Anthropic "stop_sequences").
+	Stop []string `json:"stop,omitempty"`
 	// Think is ollama's native thinking toggle: true|false, a level string
 	// ("low"|"medium"|"high"), or {"level": "..."}. Forwarded verbatim to
 	// ollama upstreams; translated to ReasoningEffort for OpenAI ones.

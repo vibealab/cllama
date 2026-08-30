@@ -38,6 +38,11 @@ func (s *Server) HandleFunc(mux *http.ServeMux) {
 	mux.HandleFunc("/api/openai/v1/chat/completions", s.requireAPIToken(s.handleChat))
 	mux.HandleFunc("/api/openai/v1/embeddings", s.requireAPIToken(s.handleEmbedding))
 
+	// LLM API routes (Anthropic Messages style; consumed by Claude Code and
+	// other Anthropic-native clients — see client/anthropic.go)
+	mux.HandleFunc("/api/anthropic/v1/messages", s.requireAPITokenAnthropic(s.handleAnthropicMessages))
+	mux.HandleFunc("/api/anthropic/v1/messages/count_tokens", s.requireAPITokenAnthropic(s.handleAnthropicCountTokens))
+
 	// Admin routes
 	mux.HandleFunc("/admin/backends", s.handleAdminBackends)
 	mux.HandleFunc("/admin/backends/", s.handleAdminBackendDetail)
@@ -87,6 +92,30 @@ func bearerToken(r *http.Request) string {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
 	return ""
+}
+
+// requireAPITokenAnthropic is requireAPIToken for the Anthropic endpoints:
+// Anthropic clients authenticate with "x-api-key" (or a bearer token when
+// ANTHROPIC_AUTH_TOKEN is used) instead of the OpenAI-style header.
+func (s *Server) requireAPITokenAnthropic(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		want := s.cfg.Get().APIToken
+		if want == "" {
+			next(w, r)
+			return
+		}
+
+		token := bearerToken(r)
+		if token == "" {
+			token = r.Header.Get("x-api-key")
+		}
+		if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(want)) == 1 {
+			next(w, r)
+			return
+		}
+		// Anthropic-format error envelope so Anthropic clients can parse it.
+		respondAnthropicErrorObj(w, http.StatusUnauthorized, "authentication_error", "invalid or missing API token")
+	}
 }
 
 // handleRoot reports service status and the exposed mock model list.

@@ -149,7 +149,7 @@
   }, 1000);
 
   // ── tab 2: models ↔ backends ───────────────────────────────────────────
-  const TYPE_LABEL = { ollama: "ollama", openai: "openai", tunnel: "child tunnel" };
+  const TYPE_LABEL = { ollama: "ollama", openai: "openai", anthropic: "anthropic", tunnel: "child tunnel" };
 
   // Kept for the register dialog's model dropdown.
   let knownModels = [];
@@ -312,7 +312,11 @@
   function openRegisterDialog() {
     const typeSel = el("select");
     typeSel.name = "type";
-    typeSel.append(el("option", null, "ollama"), el("option", null, "openai"));
+    typeSel.append(
+      el("option", null, "ollama"),
+      el("option", null, "openai"),
+      el("option", null, "anthropic"),
+    );
 
     const endpointIn = el("input");
     endpointIn.name = "endpoint";

@@ -28,9 +28,9 @@ import (
 
 // registerRequest is the admin body for registering an upstream server.
 type registerRequest struct {
-	Type     string `json:"type"`     // "ollama" | "openai"
+	Type     string `json:"type"`     // "ollama" | "openai" | "anthropic"
 	Endpoint string `json:"endpoint"` // e.g. http://host:11434
-	Token    string `json:"token"`    // optional auth token (ollama or openai)
+	Token    string `json:"token"`    // optional auth token (bearer for ollama/openai, x-api-key for anthropic)
 
 	Model         string `json:"model"`          // mock model in this proxy (must be in -name list)
 	UpstreamModel string `json:"upstream_model"` // actual model name upstream (defaults to model)
@@ -187,10 +187,10 @@ func (s *Server) registerBackend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch client.BackendType(body.Type) {
-	case client.BackendOllama, client.BackendOpenAI:
+	case client.BackendOllama, client.BackendOpenAI, client.BackendAnthropic:
 	default:
 		log.Printf("[admin] register rejected: invalid type %q", body.Type)
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "type must be 'ollama' or 'openai'"})
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "type must be 'ollama', 'openai' or 'anthropic'"})
 		return
 	}
 	if body.Endpoint == "" {
@@ -336,6 +336,8 @@ func (s *Server) buildClient(t client.BackendType, endpoint, token string) clien
 		return client.NewOllamaClient(endpoint, token, timeout)
 	case client.BackendOpenAI:
 		return client.NewOpenAIClient(endpoint, token, timeout)
+	case client.BackendAnthropic:
+		return client.NewAnthropicClient(endpoint, token, timeout)
 	default:
 		return nil
 	}
