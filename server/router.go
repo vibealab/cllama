@@ -71,17 +71,100 @@ type Router struct {
 	// events broadcasts state changes to the web UI (may be nil in tests).
 	events *eventHub
 
-	// queued tracks the requests currently waiting for a backend so the
-	// admin API and UI can show what is in the queue.
+	// queued tracks the requests currently in the request queue (pending,
+	// takeaway, processing or failed) so the admin API and UI can show
+	// their lifecycle state.
 	queueMu sync.Mutex
 	queued  map[string]*queuedRequest
+
+	// stopCh shuts down the done/failed retention sweeper.
+	stopCh  chan struct{}
+	stopOne sync.Once
 }
 
-// queuedRequest is one request waiting in the no-backend queue.
+// RequestHandle is a token for one LLM request tracked in the router's
+// request queue. Callers advance the request through its lifecycle:
+// MarkProcessing when the backend call starts, then Done on success or Fail
+// on failure. All methods are safe to call on a nil handle.
+type RequestHandle struct {
+	router *Router
+	entry  *queuedRequest
+}
+
+// RequestState is the lifecycle state of an LLM request tracked in the
+// router's request queue.
+type RequestState string
+
+const (
+	// StatePending: the request is enqueued and the backend selector is
+	// looking for a backend to serve it.
+	StatePending RequestState = "pending"
+	// StateTakeaway: a backend has been assigned ("taken away" for serving)
+	// but the upstream call has not started yet. In the future this state
+	// can also be set manually by an admin to pin a request so the selector
+	// never routes it and it can be operated on by hand.
+	StateTakeaway RequestState = "takeaway"
+	// StateProcessing: a backend is actively serving the request.
+	StateProcessing RequestState = "processing"
+	// StateDone: the backend answered successfully; the entry lingers in
+	// the queue per DoneRequestRetention so it can be reviewed.
+	StateDone RequestState = "done"
+	// StateFail: the backend request failed; the entry lingers in the
+	// queue per FailedRequestRetention before being purged.
+	StateFail RequestState = "fail"
+)
+
+// DoneRequestRetention is how long a successfully completed request stays
+// visible in the request queue (in the "done" state, for review) before
+// being purged. It is fixed at compile time:
+//
+//	-1  keep done requests in the queue forever; an admin removes them
+//	    manually via DELETE /admin/queue/<id>
+//	 0  remove a request from the queue as soon as it completes
+//	>0 keep done requests in the queue for this long, then purge them
+const DoneRequestRetention = 5 * time.Minute
+
+// FailedRequestRetention is how long a failed request stays visible in the
+// request queue (in the "fail" state) before being purged. It is fixed at
+// compile time:
+//
+//	-1  keep failed requests in the queue forever; an admin removes them
+//	    manually via DELETE /admin/queue/<id>
+//	 0  remove a request from the queue as soon as it fails
+//	>0 keep failed requests in the queue for this long, then purge them
+const FailedRequestRetention = 5 * time.Minute
+
+// failedSweepInterval is how often expired done/failed requests are purged.
+const failedSweepInterval = time.Second
+
+// queuedRequest is one LLM request tracked in the request queue.
 type queuedRequest struct {
 	ID    string
 	Model string
+	State RequestState
 	At    time.Time
+	// AssignedTo is the backend the selector took the request for
+	// (meaningful from StateTakeaway onwards).
+	AssignedTo string
+	// Error records why State == StateFail.
+	Error string
+	// EndedAt is when the request reached a terminal state (done or
+	// fail); it drives retention expiry.
+	EndedAt time.Time
+}
+
+// terminalRetention returns how long a request in the given terminal state
+// lingers in the queue before being purged (-1 forever, 0 remove immediately,
+// >0 keep that long); non-terminal states do not linger.
+func terminalRetention(state RequestState) time.Duration {
+	switch state {
+	case StateDone:
+		return DoneRequestRetention
+	case StateFail:
+		return FailedRequestRetention
+	default:
+		return 0
+	}
 }
 
 // NewRouter creates a router exposing the given mock models with the given
@@ -92,14 +175,48 @@ func NewRouter(maxQueue int, models []string, events *eventHub) *Router {
 		models: models,
 		events: events,
 		queued: make(map[string]*queuedRequest),
+		stopCh: make(chan struct{}),
 	}
 	if maxQueue > 0 {
 		r.queueSlots = make(chan struct{}, maxQueue)
 	}
+	r.startRetentionSweeper()
 	return r
 }
 
-// QueueStatus returns the requests currently waiting for a backend (newest
+// startRetentionSweeper launches the background purge of expired done and
+// failed requests (a no-op unless either retention is a positive duration).
+func (r *Router) startRetentionSweeper() {
+	if FailedRequestRetention <= 0 && DoneRequestRetention <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(failedSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.stopCh:
+				return
+			case now := <-ticker.C:
+				var changed bool
+				r.queueMu.Lock()
+				for id, q := range r.queued {
+					ret := terminalRetention(q.State)
+					if ret > 0 && now.Sub(q.EndedAt) >= ret {
+						delete(r.queued, id)
+						changed = true
+					}
+				}
+				r.queueMu.Unlock()
+				if changed {
+					r.events.emit(topicQueue)
+				}
+			}
+		}
+	}()
+}
+
+// QueueStatus returns the requests currently tracked in the queue (newest
 // first) and the queue capacity (0 means queueing is disabled).
 func (r *Router) QueueStatus() ([]queuedRequest, int) {
 	r.queueMu.Lock()
@@ -284,16 +401,42 @@ func (r *Router) NextBackendForModel(mockModel string) (*BackendEntry, string, b
 	return selected.be, selected.upstream, true
 }
 
-// Acquire returns a backend for the given mock model. When none is available,
-// the call waits (holding a queue slot) until one is registered, the context
-// is cancelled, or the queue is full.
-func (r *Router) Acquire(ctx context.Context, mockModel string) (*BackendEntry, string, error) {
+// Acquire returns a backend for the given mock model and enqueues the
+// request in the router's request queue for its whole lifecycle. The request
+// starts as "pending" while the backend selector scans the registry; once a
+// backend is picked it becomes "takeaway" and the returned handle is handed
+// to the caller, which marks it "processing" and finally Done or Fail — both
+// terminal states linger in the queue for their retention (see
+// DoneRequestRetention and FailedRequestRetention) for review before being
+// purged or removed by hand. When no backend is available the call waits
+// (holding a queue slot) until one is registered, the context is cancelled,
+// or the queue is full. On error the handle is nil and nothing remains
+// queued.
+func (r *Router) Acquire(ctx context.Context, mockModel string) (*BackendEntry, string, *RequestHandle, error) {
+	// Every request enters the queue as soon as it arrives.
+	entry := &queuedRequest{ID: generateID(), Model: mockModel, State: StatePending, At: time.Now()}
+	r.queueMu.Lock()
+	r.queued[entry.ID] = entry
+	r.queueMu.Unlock()
+	r.events.emit(topicQueue)
+	h := &RequestHandle{router: r, entry: entry}
+
+	// take marks the request as taken away for the given backend.
+	take := func(be *BackendEntry) {
+		r.transition(entry, func(q *queuedRequest) {
+			q.State = StateTakeaway
+			q.AssignedTo = be.ID
+		})
+	}
+
 	if be, up, ok := r.NextBackendForModel(mockModel); ok {
-		return be, up, nil
+		take(be)
+		return be, up, h, nil
 	}
 	if r.queueSlots == nil { // queueing disabled
+		r.release(entry)
 		log.Printf("[route] model %q: no backend available and queueing disabled", mockModel)
-		return nil, "", ErrQueueFull
+		return nil, "", nil, ErrQueueFull
 	}
 
 	// Take a queue slot or reject immediately when the queue is full.
@@ -301,42 +444,122 @@ func (r *Router) Acquire(ctx context.Context, mockModel string) (*BackendEntry, 
 	case r.queueSlots <- struct{}{}:
 		defer func() { <-r.queueSlots }()
 	default:
+		r.release(entry)
 		log.Printf("[route] model %q: no backend available and request queue is full", mockModel)
-		return nil, "", ErrQueueFull
+		return nil, "", nil, ErrQueueFull
 	}
 
-	// Publish the request in the queue registry so the admin API and UI
-	// can show what is waiting.
-	entry := &queuedRequest{ID: generateID(), Model: mockModel, At: time.Now()}
-	r.queueMu.Lock()
-	r.queued[entry.ID] = entry
-	r.queueMu.Unlock()
-	r.events.emit(topicQueue)
-	defer func() {
-		r.queueMu.Lock()
-		delete(r.queued, entry.ID)
-		r.queueMu.Unlock()
-		r.events.emit(topicQueue)
-	}()
-
-	log.Printf("[route] model %q: no backend available, request queued", mockModel)
+	log.Printf("[route] model %q: no backend available, request %s queued", mockModel, entry.ID)
 
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, "", ctx.Err()
+			r.release(entry)
+			return nil, "", nil, ctx.Err()
 		case <-ticker.C:
 			if be, up, ok := r.NextBackendForModel(mockModel); ok {
-				return be, up, nil
+				take(be)
+				return be, up, h, nil
 			}
 		}
 	}
 }
 
+// transition applies a state change to a still-queued request and notifies
+// subscribers. Entries already removed from the queue are left untouched.
+func (r *Router) transition(entry *queuedRequest, mutate func(*queuedRequest)) {
+	r.queueMu.Lock()
+	_, live := r.queued[entry.ID]
+	if live {
+		mutate(entry)
+	}
+	r.queueMu.Unlock()
+	if live {
+		r.events.emit(topicQueue)
+	}
+}
+
+// release removes a request from the queue entirely.
+func (r *Router) release(entry *queuedRequest) {
+	r.queueMu.Lock()
+	_, live := r.queued[entry.ID]
+	delete(r.queued, entry.ID)
+	r.queueMu.Unlock()
+	if live {
+		r.events.emit(topicQueue)
+	}
+}
+
+// MarkProcessing records that the assigned backend has started serving the
+// request.
+func (h *RequestHandle) MarkProcessing() {
+	if h == nil {
+		return
+	}
+	h.router.transition(h.entry, func(q *queuedRequest) { q.State = StateProcessing })
+}
+
+// Done records that the backend answered successfully. Like Fail, the
+// request is not dropped silently: it moves to the "done" state and lingers
+// in the queue for DoneRequestRetention (removed immediately when zero,
+// kept forever when negative) so completed requests can be reviewed,
+// then is purged or removed by hand via DELETE /admin/queue/<id>.
+func (h *RequestHandle) Done() {
+	if h == nil {
+		return
+	}
+	if DoneRequestRetention == 0 {
+		h.router.release(h.entry)
+		return
+	}
+	h.router.transition(h.entry, func(q *queuedRequest) {
+		q.State = StateDone
+		q.EndedAt = time.Now()
+	})
+}
+
+// Fail marks the request as failed. It then lingers in the queue for
+// FailedRequestRetention (forever when negative, purged immediately when
+// zero) so the admin API and UI can show what went wrong.
+func (h *RequestHandle) Fail(cause error) {
+	if h == nil {
+		return
+	}
+	if FailedRequestRetention == 0 {
+		h.router.release(h.entry)
+		return
+	}
+	msg := "backend request failed"
+	if cause != nil {
+		msg = cause.Error()
+	}
+	h.router.transition(h.entry, func(q *queuedRequest) {
+		q.State = StateFail
+		q.Error = msg
+		q.EndedAt = time.Now()
+	})
+}
+
+// RemoveQueued drops a request from the queue regardless of its state
+// (manual admin action, e.g. purging a failed request kept forever);
+// it reports whether one was found.
+func (r *Router) RemoveQueued(id string) bool {
+	r.queueMu.Lock()
+	_, ok := r.queued[id]
+	delete(r.queued, id)
+	r.queueMu.Unlock()
+	if ok {
+		r.events.emit(topicQueue)
+	}
+	return ok
+}
+
 // Stop releases router resources.
-func (r *Router) Stop() {}
+func (r *Router) Stop() {
+	r.stopOne.Do(func() { close(r.stopCh) })
+}
 
 // formatBindings renders a binding map for log output.
 func formatBindings(b map[string]string) string {

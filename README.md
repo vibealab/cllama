@@ -41,7 +41,10 @@ reverse tunnel. No inbound connections to the GPU machines are needed.
   implemented).
 - **Dynamic backends**: register/unregister upstream servers at runtime via
   the admin API; requests are load-balanced across healthy backends per model
-  and queued (up to `-maxqueue`) when none are available.
+  and queued (up to `-maxqueue`) when none are available. Every request is
+  tracked in the queue through a
+  [request lifecycle](wiki/what-is-request-lifecycle.md):
+  **pending → takeaway → processing → done / fail**.
 - **Model aliasing**: map any upstream model name to a mock model name
   exposed by the proxy.
 - **Hierarchies / tunneling**: child cllama servers dial out to a parent and
@@ -252,7 +255,8 @@ executed on the child's local Ollama. Details:
 | `POST /admin/backends/<id>/enabled` | enable/disable a backend (incl. child tunnels), body `{"enabled": true\|false}` |
 | `GET /admin/models` | mock models with their backend bindings |
 | `GET/DELETE /admin/parents` | inspect / disconnect tunnel parent connections |
-| `GET /admin/queue` | requests waiting in the no-backend queue |
+| `GET /admin/queue` | requests tracked in the lifecycle queue (pending / takeaway / processing / done / fail) |
+| `DELETE /admin/queue/<id>` | remove a queued request by hand (e.g. a retained done or failed one) |
 | `GET /admin/events` | Server-Sent Events stream of admin state changes |
 | `GET /ui` | embedded web dashboard |
 
@@ -260,8 +264,9 @@ executed on the child's local Ollama. Details:
 
 Every cllama server embeds a small dashboard, served at `http://<listen>/ui/`:
 
-- **Request queue** tab — live view of the requests waiting for a backend
-  (model, wait time, queue depth), from `GET /admin/queue`.
+- **Request queue** tab — live view of every in-flight request (model,
+  [lifecycle state](wiki/what-is-request-lifecycle.md), assigned backend,
+  wait time, queue depth), with manual removal, from `GET /admin/queue`.
 - **Models & backends** tab — which mock model maps to which upstream server
   or connected child cllama tunnel, with register / unregister and
   enable / disable controls, plus the child side's parent connections.

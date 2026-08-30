@@ -29,7 +29,7 @@ import (
 // On success req.Model is rewritten to the upstream model name.
 func (s *Server) execChat(ctx context.Context, req *client.ChatRequest) (*client.ChatResponse, error) {
 	mockModel := req.Model
-	be, upstreamModel, err := s.router.Acquire(ctx, mockModel)
+	be, upstreamModel, rq, err := s.router.Acquire(ctx, mockModel)
 	if err != nil {
 		log.Printf("[route] chat %q: no backend: %v", mockModel, err)
 		return nil, err
@@ -38,10 +38,14 @@ func (s *Server) execChat(ctx context.Context, req *client.ChatRequest) (*client
 		mockModel, be.ID, be.Type, be.Endpoint, upstreamModel)
 	req.Model = upstreamModel
 
+	rq.MarkProcessing()
 	resp, err := be.client.Chat(ctx, req)
 	if err != nil {
 		log.Printf("[route] chat %q backend %s (%s %s) failed: %v", mockModel, be.ID, be.Type, be.Endpoint, err)
+		rq.Fail(err)
+		return resp, err
 	}
+	rq.Done()
 	return resp, err
 }
 
@@ -50,7 +54,7 @@ func (s *Server) execChat(ctx context.Context, req *client.ChatRequest) (*client
 // aborts the stream.
 func (s *Server) execChatStream(ctx context.Context, req *client.ChatRequest, emit func(event string) bool) error {
 	mockModel := req.Model
-	be, upstreamModel, err := s.router.Acquire(ctx, mockModel)
+	be, upstreamModel, rq, err := s.router.Acquire(ctx, mockModel)
 	if err != nil {
 		log.Printf("[route] chat stream %q: no backend: %v", mockModel, err)
 		return err
@@ -59,9 +63,11 @@ func (s *Server) execChatStream(ctx context.Context, req *client.ChatRequest, em
 		mockModel, be.ID, be.Type, be.Endpoint, upstreamModel)
 	req.Model = upstreamModel
 
+	rq.MarkProcessing()
 	upstream, err := be.client.ChatStream(ctx, req)
 	if err != nil {
 		log.Printf("[route] chat stream %q backend %s (%s %s) failed: %v", mockModel, be.ID, be.Type, be.Endpoint, err)
+		rq.Fail(err)
 		return err
 	}
 	defer upstream.Close()
@@ -77,13 +83,20 @@ func (s *Server) execChatStream(ctx context.Context, req *client.ChatRequest, em
 				// StreamToSSE closes ch only after its result is queued, so
 				// this receive never blocks. A truncated upstream stream is
 				// an error, not a silent 200.
-				return <-sseErr
+				if err := <-sseErr; err != nil {
+					rq.Fail(err)
+					return err
+				}
+				rq.Done()
+				return nil
 			}
 			if !emit(evt) {
+				rq.Done()
 				return nil
 			}
 		case <-ctx.Done():
 			log.Printf("[route] chat stream %q backend %s aborted: %v", mockModel, be.ID, ctx.Err())
+			rq.Fail(ctx.Err())
 			return ctx.Err()
 		}
 	}
@@ -91,7 +104,7 @@ func (s *Server) execChatStream(ctx context.Context, req *client.ChatRequest, em
 
 // execEmbedding routes and executes an embedding request.
 func (s *Server) execEmbedding(ctx context.Context, model string, input interface{}) ([][]float64, error) {
-	be, upstreamModel, err := s.router.Acquire(ctx, model)
+	be, upstreamModel, rq, err := s.router.Acquire(ctx, model)
 	if err != nil {
 		log.Printf("[route] embed %q: no backend: %v", model, err)
 		return nil, err
@@ -99,10 +112,14 @@ func (s *Server) execEmbedding(ctx context.Context, model string, input interfac
 	log.Printf("[route] embed %q -> backend %s (%s %s) as upstream model %q",
 		model, be.ID, be.Type, be.Endpoint, upstreamModel)
 
+	rq.MarkProcessing()
 	embeddings, err := be.client.Embeddings(ctx, upstreamModel, input)
 	if err != nil {
 		log.Printf("[route] embed %q backend %s (%s %s) failed: %v", model, be.ID, be.Type, be.Endpoint, err)
+		rq.Fail(err)
+		return embeddings, err
 	}
+	rq.Done()
 	return embeddings, err
 }
 

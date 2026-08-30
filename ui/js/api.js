@@ -41,6 +41,9 @@ window.API = (() => {
     connectParent:    (url) => sendJSON("POST", "/admin/parents", { url }),
     disconnectParent: (id) => sendJSON("DELETE", `/admin/parents/${enc(id)}`),
 
+    // Request queue
+    removeQueued: (id) => sendJSON("DELETE", `/admin/queue/${enc(id)}`),
+
     // Live updates: onTopic receives "hello" | "queue" | "backends" |
     // "parents". Returns the EventSource so callers can hook open/error.
     events: (onTopic) => {

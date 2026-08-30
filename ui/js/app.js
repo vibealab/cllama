@@ -64,6 +64,9 @@
   // fetched, so the "Waiting" column can tick without refetching.
   let queueFetchedAt = 0;
 
+  // Lifecycle state → badge style for the queue table.
+  const STATE_STYLE = { pending: "warn", takeaway: "muted", processing: "ok", done: "ok", fail: "bad" };
+
   async function refreshQueue() {
     let data;
     try {
@@ -85,13 +88,31 @@
       tdId.textContent = req.id;
       const tdModel = el("td", "mono");
       tdModel.textContent = req.model;
+      const tdState = el("td");
+      const stateBadge = badge(req.state || "?", STATE_STYLE[req.state] || "muted");
+      if (req.error) stateBadge.title = req.error;
+      tdState.appendChild(stateBadge);
+      const tdBackend = el("td", "mono");
+      tdBackend.textContent = req.backend || "—";
       const tdWait = el("td");
       tdWait.dataset.waitMs = req.wait_ms;
       tdWait.textContent = fmtWait(req.wait_ms);
-      tr.append(tdId, tdModel, tdWait);
+      const tdAct = el("td", "actions-cell");
+      tdAct.appendChild(iconButton("🗑️", "Remove from queue", () => removeQueued(req.id)));
+      tr.append(tdId, tdModel, tdState, tdBackend, tdWait, tdAct);
       tbody.appendChild(tr);
     }
     $("#queue-empty").classList.toggle("hidden", (data.requests || []).length > 0);
+  }
+
+  async function removeQueued(id) {
+    try {
+      await API.removeQueued(id);
+      UI.toast(`request ${id} removed from queue`);
+    } catch (err) {
+      UI.toast("remove failed: " + err.message, "bad");
+    }
+    refreshQueue();
   }
 
   // Local-only ticker: grows the displayed wait times between SSE events.

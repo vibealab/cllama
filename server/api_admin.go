@@ -21,7 +21,8 @@ import (
 // POST   /admin/backends/<id>/bindings  - add another model binding to a backend
 // POST   /admin/backends/<id>/enabled   - enable/disable a backend {"enabled": bool}
 // GET    /admin/models            - list mock models with their bindings
-// GET    /admin/queue             - requests waiting for a backend
+// GET    /admin/queue             - requests tracked in the request queue
+// DELETE /admin/queue/<id>        - remove a request from the queue
 
 // registerRequest is the admin body for registering an upstream server.
 type registerRequest struct {
@@ -98,10 +99,13 @@ func (s *Server) setBackendEnabled(w http.ResponseWriter, r *http.Request, id st
 	}
 }
 
-// ── Queue inspection ──────────────────────────────────────────────────────
+// ── Queue inspection ─────────────────────────────────────────────────
 
-// handleAdminQueue lists the requests currently waiting because no backend
-// serves their model (see Router.Acquire).
+// handleAdminQueue lists the requests currently tracked in the request
+// queue with their lifecycle state (see Router.Acquire): pending while the
+// selector looks for a backend, takeaway once one was assigned, processing
+// while the backend serves, and the terminal done / fail states retained
+// for review before being purged.
 func (s *Server) handleAdminQueue(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -113,6 +117,9 @@ func (s *Server) handleAdminQueue(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, map[string]interface{}{
 			"id":      q.ID,
 			"model":   q.Model,
+			"state":   q.State,
+			"backend": q.AssignedTo,
+			"error":   q.Error,
 			"wait_ms": time.Since(q.At).Milliseconds(),
 		})
 	}
@@ -121,6 +128,27 @@ func (s *Server) handleAdminQueue(w http.ResponseWriter, r *http.Request) {
 		"queued":   len(requests),
 		"capacity": capacity,
 	})
+}
+
+// handleAdminQueueDetail serves DELETE /admin/queue/<id>: manually removing
+// a request from the queue (e.g. a failed one kept for inspection).
+func (s *Server) handleAdminQueueDetail(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/admin/queue/")
+	id, _, _ := strings.Cut(rest, "/")
+	if id == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "missing request id"})
+		return
+	}
+	if r.Method != http.MethodDelete {
+		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	log.Printf("[admin] remove queued request %q requested", id)
+	if s.router.RemoveQueued(id) {
+		respondJSON(w, http.StatusOK, map[string]string{"status": "removed", "id": id})
+		return
+	}
+	respondJSON(w, http.StatusNotFound, map[string]string{"error": "queued request not found"})
 }
 
 // ── List backends ────────────────────────────────────────────────────────────

@@ -43,6 +43,7 @@ func (s *Server) HandleFunc(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/backends/", s.handleAdminBackendDetail)
 	mux.HandleFunc("/admin/models", s.handleAdminModels)
 	mux.HandleFunc("/admin/queue", s.handleAdminQueue)
+	mux.HandleFunc("/admin/queue/", s.handleAdminQueueDetail)
 	mux.HandleFunc("/admin/events", s.handleAdminEvents)
 
 	// Web UI: embedded static assets by default, or the -debug-ui directory
