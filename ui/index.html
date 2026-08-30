@@ -53,7 +53,7 @@
       <p class="hint">Every LLM request is tracked here: <b>pending</b> while the selector looks for a backend, <b>takeaway</b> once one is assigned, <b>processing</b> while the backend answers. Completed (<b>done</b>) and failed (<b>fail</b>) requests linger for review before being purged, and can be removed by hand.</p>
       <table>
         <thead>
-          <tr><th>Request</th><th>Model</th><th>State</th><th>Backend</th><th>Waiting</th><th></th></tr>
+          <tr><th>Request</th><th>Model</th><th>State</th><th>Backend</th><th title="Processing time; for finished requests the retention time since the end is shown in parentheses">Timing</th><th></th></tr>
         </thead>
         <tbody id="queue-rows"></tbody>
       </table>

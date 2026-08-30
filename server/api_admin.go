@@ -116,14 +116,24 @@ func (s *Server) handleAdminQueue(w http.ResponseWriter, r *http.Request) {
 	items, capacity := s.router.QueueStatus()
 	requests := make([]map[string]interface{}, 0, len(items))
 	for _, q := range items {
-		requests = append(requests, map[string]interface{}{
+		req := map[string]interface{}{
 			"id":      q.ID,
 			"model":   q.Model,
 			"state":   q.State,
 			"backend": q.AssignedTo,
 			"error":   q.Error,
-			"wait_ms": time.Since(q.At).Milliseconds(),
-		})
+		}
+		if q.EndedAt.IsZero() {
+			// Still in flight: processing time ticks live.
+			req["wait_ms"] = time.Since(q.At).Milliseconds()
+		} else {
+			// Terminal state: processing time is frozen at the end point;
+			// ended_ms_ago is the retention time that keeps ticking until
+			// the sweeper purges the entry.
+			req["wait_ms"] = q.EndedAt.Sub(q.At).Milliseconds()
+			req["ended_ms_ago"] = time.Since(q.EndedAt).Milliseconds()
+		}
+		requests = append(requests, req)
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"requests": requests,

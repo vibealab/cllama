@@ -14,11 +14,13 @@
   const badge = UI.badge;
 
   function fmtWait(ms) {
-    if (ms < 1000) return ms + " ms";
-    const s = ms / 1000;
-    if (s < 60) return s.toFixed(1) + " s";
+    if (ms < 1000) return ms + "ms";
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + "s";
     const m = Math.floor(s / 60);
-    return m + "m " + String(Math.floor(s % 60)).padStart(2, "0") + "s";
+    if (m < 60) return m + "m" + String(s % 60).padStart(2, "0") + "s";
+    const h = Math.floor(m / 60);
+    return h + "h" + String(m % 60).padStart(2, "0") + "m";
   }
 
   // ── theme switch (🌞/🌙) ──────────────────────────────────────────────
@@ -61,12 +63,27 @@
   }
 
   // ── tab 1: request queue ───────────────────────────────────────────────
-  // Rows carry their server-side wait time plus the local time it was
-  // fetched, so the "Waiting" column can tick without refetching.
+  // Rows carry their server-side timings plus the local time they were
+  // fetched, so the timing column can tick without refetching:
+  // in-flight requests show their live processing time; finished ones show
+  // the frozen processing time plus the ticking retention time,
+  // e.g. "5m21s (56s)".
   let queueFetchedAt = 0;
 
   // Lifecycle state → badge style for the queue table.
   const STATE_STYLE = { pending: "warn", takeaway: "muted", processing: "ok", done: "ok", fail: "bad" };
+
+  // renderWait (re)draws one timing cell from its dataset, accounting for
+  // the drift since the last queue fetch. Used on render and by the ticker.
+  function renderWait(td) {
+    const drift = Date.now() - queueFetchedAt;
+    const wait = Number(td.dataset.waitMs);
+    if (td.dataset.endedMsAgo === undefined) {
+      td.textContent = fmtWait(wait + drift); // still in flight
+      return;
+    }
+    td.textContent = fmtWait(wait) + " (" + fmtWait(Number(td.dataset.endedMsAgo) + drift) + ")";
+  }
 
   async function refreshQueue() {
     let data;
@@ -97,7 +114,13 @@
       tdBackend.textContent = req.backend || "—";
       const tdWait = el("td");
       tdWait.dataset.waitMs = req.wait_ms;
-      tdWait.textContent = fmtWait(req.wait_ms);
+      if (req.ended_ms_ago !== undefined && req.ended_ms_ago !== null) {
+        tdWait.dataset.endedMsAgo = req.ended_ms_ago;
+        tdWait.title = "finished " + fmtWait(req.ended_ms_ago) + " ago; purged after the retention period";
+      } else {
+        tdWait.title = "processing time so far";
+      }
+      renderWait(tdWait);
       const tdAct = el("td", "actions-cell");
       tdAct.appendChild(iconButton("🗑️", "Remove from queue", () => removeQueued(req.id)));
       tr.append(tdId, tdModel, tdState, tdBackend, tdWait, tdAct);
@@ -116,12 +139,12 @@
     refreshQueue();
   }
 
-  // Local-only ticker: grows the displayed wait times between SSE events.
+  // Local-only ticker: grows the displayed times between SSE events —
+  // processing time for in-flight requests, retention time for finished ones.
   setInterval(() => {
     if (!queueFetchedAt || document.querySelector("#tab-queue.hidden")) return;
-    const drift = Date.now() - queueFetchedAt;
     for (const td of document.querySelectorAll("#queue-rows td[data-wait-ms]")) {
-      td.textContent = fmtWait(Number(td.dataset.waitMs) + drift);
+      renderWait(td);
     }
   }, 1000);
 
