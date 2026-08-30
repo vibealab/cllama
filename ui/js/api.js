@@ -31,6 +31,7 @@ window.API = (() => {
     models:     () => getJSON("/admin/models"),
     backends:   () => getJSON("/admin/backends"),
     parents:    () => getJSON("/admin/parents"),
+    config:     () => getJSON("/admin/config"),
 
     // Backends
     registerBackend:   (backend) => sendJSON("POST", "/admin/backends", backend),
@@ -43,6 +44,9 @@ window.API = (() => {
 
     // Request queue
     removeQueued: (id) => sendJSON("DELETE", `/admin/queue/${enc(id)}`),
+
+    // System settings (in-memory config)
+    updateConfig: (cfg) => sendJSON("PUT", "/admin/config", cfg),
 
     // Live updates: onTopic receives "hello" | "queue" | "backends" |
     // "parents". Returns the EventSource so callers can hook open/error.

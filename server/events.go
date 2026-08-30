@@ -19,6 +19,7 @@ const (
 	topicQueue    = "queue"
 	topicBackends = "backends"
 	topicParents  = "parents"
+	topicConfig   = "config"
 )
 
 // uiPingInterval keeps intermediaries from closing idle SSE connections.

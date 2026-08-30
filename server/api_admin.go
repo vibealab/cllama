@@ -21,6 +21,8 @@ import (
 // POST   /admin/backends/<id>/bindings  - add another model binding to a backend
 // POST   /admin/backends/<id>/enabled   - enable/disable a backend {"enabled": bool}
 // GET    /admin/models            - list mock models with their bindings
+// GET    /admin/config            - show the in-memory system settings
+// PUT    /admin/config            - update the in-memory system settings
 // GET    /admin/queue             - requests tracked in the request queue
 // DELETE /admin/queue/<id>        - remove a request from the queue
 
@@ -315,14 +317,15 @@ func backendView(be *BackendEntry) map[string]interface{} {
 	}
 }
 
-// buildClient constructs the upstream client, applying the server's
-// -gen-timeout (0 = no timeout).
+// buildClient constructs the upstream client, applying the configured
+// generation timeout (config.GenTimeout; 0 = no timeout).
 func (s *Server) buildClient(t client.BackendType, endpoint, token string) client.Client {
+	timeout := s.cfg.Get().GenTimeout
 	switch t {
 	case client.BackendOllama:
-		return client.NewOllamaClient(endpoint, token, s.genTimeout)
+		return client.NewOllamaClient(endpoint, token, timeout)
 	case client.BackendOpenAI:
-		return client.NewOpenAIClient(endpoint, token, s.genTimeout)
+		return client.NewOpenAIClient(endpoint, token, timeout)
 	default:
 		return nil
 	}

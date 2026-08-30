@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"cllama/client"
+	"cllama/config"
 )
 
 // Errors returned by the router.
@@ -66,7 +67,14 @@ type Router struct {
 
 	models []string // mock model names exposed by this proxy
 
-	queueSlots chan struct{} // semaphore limiting concurrently queued requests
+	// cfg is the server's in-memory system configuration (queue depth,
+	// done/fail retention); it is read live, so admin updates apply
+	// without restarts.
+	cfg *config.Store
+
+	// waiting counts requests currently holding a no-backend queue slot
+	// (guarded by queueMu); the capacity comes from cfg.MaxQueue.
+	waiting int
 
 	// events broadcasts state changes to the web UI (may be nil in tests).
 	events *eventHub
@@ -107,35 +115,16 @@ const (
 	// StateProcessing: a backend is actively serving the request.
 	StateProcessing RequestState = "processing"
 	// StateDone: the backend answered successfully; the entry lingers in
-	// the queue per DoneRequestRetention so it can be reviewed.
+	// the queue per the configured DoneRetention so it can be reviewed.
 	StateDone RequestState = "done"
 	// StateFail: the backend request failed; the entry lingers in the
-	// queue per FailedRequestRetention before being purged.
+	// queue per the configured FailedRetention before being purged.
 	StateFail RequestState = "fail"
 )
 
-// DoneRequestRetention is how long a successfully completed request stays
-// visible in the request queue (in the "done" state, for review) before
-// being purged. It is fixed at compile time:
-//
-//	-1  keep done requests in the queue forever; an admin removes them
-//	    manually via DELETE /admin/queue/<id>
-//	 0  remove a request from the queue as soon as it completes
-//	>0 keep done requests in the queue for this long, then purge them
-const DoneRequestRetention = 5 * time.Minute
-
-// FailedRequestRetention is how long a failed request stays visible in the
-// request queue (in the "fail" state) before being purged. It is fixed at
-// compile time:
-//
-//	-1  keep failed requests in the queue forever; an admin removes them
-//	    manually via DELETE /admin/queue/<id>
-//	 0  remove a request from the queue as soon as it fails
-//	>0 keep failed requests in the queue for this long, then purge them
-const FailedRequestRetention = 5 * time.Minute
-
-// failedSweepInterval is how often expired done/failed requests are purged.
-const failedSweepInterval = time.Second
+// retentionSweepInterval is how often expired done/failed requests are
+// purged.
+const retentionSweepInterval = time.Second
 
 // queuedRequest is one LLM request tracked in the request queue.
 type queuedRequest struct {
@@ -154,44 +143,45 @@ type queuedRequest struct {
 }
 
 // terminalRetention returns how long a request in the given terminal state
-// lingers in the queue before being purged (-1 forever, 0 remove immediately,
-// >0 keep that long); non-terminal states do not linger.
-func terminalRetention(state RequestState) time.Duration {
+// lingers in the queue before being purged, per the live configuration
+// (config.RetentionForever never expires, 0 is handled when the request
+// ends, >0 keeps that long); non-terminal states do not linger.
+func (r *Router) terminalRetention(state RequestState) time.Duration {
+	cfg := r.cfg.Get()
 	switch state {
 	case StateDone:
-		return DoneRequestRetention
+		return cfg.DoneRetention
 	case StateFail:
-		return FailedRequestRetention
+		return cfg.FailedRetention
 	default:
 		return 0
 	}
 }
 
-// NewRouter creates a router exposing the given mock models with the given
-// maximum queue depth. events, when non-nil, receives change topics for
-// the web UI.
-func NewRouter(maxQueue int, models []string, events *eventHub) *Router {
+// NewRouter creates a router exposing the given mock models, governed by
+// the given in-memory configuration store (nil uses the defaults). events,
+// when non-nil, receives change topics for the web UI.
+func NewRouter(cfg *config.Store, models []string, events *eventHub) *Router {
+	if cfg == nil {
+		cfg = config.NewStore(config.Default())
+	}
 	r := &Router{
 		models: models,
+		cfg:    cfg,
 		events: events,
 		queued: make(map[string]*queuedRequest),
 		stopCh: make(chan struct{}),
-	}
-	if maxQueue > 0 {
-		r.queueSlots = make(chan struct{}, maxQueue)
 	}
 	r.startRetentionSweeper()
 	return r
 }
 
 // startRetentionSweeper launches the background purge of expired done and
-// failed requests (a no-op unless either retention is a positive duration).
+// failed requests. It always runs because retentions live in the mutable
+// configuration store.
 func (r *Router) startRetentionSweeper() {
-	if FailedRequestRetention <= 0 && DoneRequestRetention <= 0 {
-		return
-	}
 	go func() {
-		ticker := time.NewTicker(failedSweepInterval)
+		ticker := time.NewTicker(retentionSweepInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -201,7 +191,7 @@ func (r *Router) startRetentionSweeper() {
 				var changed bool
 				r.queueMu.Lock()
 				for id, q := range r.queued {
-					ret := terminalRetention(q.State)
+					ret := r.terminalRetention(q.State)
 					if ret > 0 && now.Sub(q.EndedAt) >= ret {
 						delete(r.queued, id)
 						changed = true
@@ -227,10 +217,7 @@ func (r *Router) QueueStatus() ([]queuedRequest, int) {
 	r.queueMu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
 
-	capacity := 0
-	if r.queueSlots != nil {
-		capacity = cap(r.queueSlots)
-	}
+	capacity := r.cfg.Get().MaxQueue
 	return out, capacity
 }
 
@@ -406,10 +393,10 @@ func (r *Router) NextBackendForModel(mockModel string) (*BackendEntry, string, b
 // starts as "pending" while the backend selector scans the registry; once a
 // backend is picked it becomes "takeaway" and the returned handle is handed
 // to the caller, which marks it "processing" and finally Done or Fail — both
-// terminal states linger in the queue for their retention (see
-// DoneRequestRetention and FailedRequestRetention) for review before being
-// purged or removed by hand. When no backend is available the call waits
-// (holding a queue slot) until one is registered, the context is cancelled,
+// terminal states linger in the queue for their configured retention (see
+// config.Config) for review before being purged or removed by hand. When no
+// backend is available the call waits (holding a queue slot, up to the
+// configured MaxQueue) until one is registered, the context is cancelled,
 // or the queue is full. On error the handle is nil and nothing remains
 // queued.
 func (r *Router) Acquire(ctx context.Context, mockModel string) (*BackendEntry, string, *RequestHandle, error) {
@@ -433,21 +420,28 @@ func (r *Router) Acquire(ctx context.Context, mockModel string) (*BackendEntry, 
 		take(be)
 		return be, up, h, nil
 	}
-	if r.queueSlots == nil { // queueing disabled
+	// Take a queue wait slot or reject immediately when queueing is
+	// disabled or the queue is full; the capacity is read from the live
+	// configuration so admin updates apply to new admissions at once.
+	r.queueMu.Lock()
+	capacity := r.cfg.Get().MaxQueue
+	if capacity <= 0 || r.waiting >= capacity {
+		r.queueMu.Unlock()
 		r.release(entry)
-		log.Printf("[route] model %q: no backend available and queueing disabled", mockModel)
+		if capacity <= 0 {
+			log.Printf("[route] model %q: no backend available and queueing disabled", mockModel)
+		} else {
+			log.Printf("[route] model %q: no backend available and request queue is full", mockModel)
+		}
 		return nil, "", nil, ErrQueueFull
 	}
-
-	// Take a queue slot or reject immediately when the queue is full.
-	select {
-	case r.queueSlots <- struct{}{}:
-		defer func() { <-r.queueSlots }()
-	default:
-		r.release(entry)
-		log.Printf("[route] model %q: no backend available and request queue is full", mockModel)
-		return nil, "", nil, ErrQueueFull
-	}
+	r.waiting++
+	r.queueMu.Unlock()
+	defer func() {
+		r.queueMu.Lock()
+		r.waiting--
+		r.queueMu.Unlock()
+	}()
 
 	log.Printf("[route] model %q: no backend available, request %s queued", mockModel, entry.ID)
 
@@ -502,15 +496,16 @@ func (h *RequestHandle) MarkProcessing() {
 }
 
 // Done records that the backend answered successfully. Like Fail, the
-// request is not dropped silently: it moves to the "done" state and lingers
-// in the queue for DoneRequestRetention (removed immediately when zero,
-// kept forever when negative) so completed requests can be reviewed,
-// then is purged or removed by hand via DELETE /admin/queue/<id>.
+// request is not dropped silently: unless the configured DoneRetention is
+// zero (leave the queue immediately, the default) it moves to the "done"
+// state and lingers in the queue so completed requests can be reviewed —
+// config.RetentionForever keeps it until an admin removes it, a positive
+// retention purges it once expired via DELETE /admin/queue/<id).
 func (h *RequestHandle) Done() {
 	if h == nil {
 		return
 	}
-	if DoneRequestRetention == 0 {
+	if h.router.cfg.Get().DoneRetention == 0 {
 		h.router.release(h.entry)
 		return
 	}
@@ -520,14 +515,15 @@ func (h *RequestHandle) Done() {
 	})
 }
 
-// Fail marks the request as failed. It then lingers in the queue for
-// FailedRequestRetention (forever when negative, purged immediately when
-// zero) so the admin API and UI can show what went wrong.
+// Fail marks the request as failed. It then lingers in the queue per the
+// configured FailedRetention (forever at config.RetentionForever, dropped
+// immediately at zero, kept that long when positive) so the admin API and
+// UI can show what went wrong.
 func (h *RequestHandle) Fail(cause error) {
 	if h == nil {
 		return
 	}
-	if FailedRequestRetention == 0 {
+	if h.router.cfg.Get().FailedRetention == 0 {
 		h.router.release(h.entry)
 		return
 	}

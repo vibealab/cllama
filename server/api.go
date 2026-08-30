@@ -42,6 +42,7 @@ func (s *Server) HandleFunc(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/backends", s.handleAdminBackends)
 	mux.HandleFunc("/admin/backends/", s.handleAdminBackendDetail)
 	mux.HandleFunc("/admin/models", s.handleAdminModels)
+	mux.HandleFunc("/admin/config", s.handleAdminConfig)
 	mux.HandleFunc("/admin/queue", s.handleAdminQueue)
 	mux.HandleFunc("/admin/queue/", s.handleAdminQueueDetail)
 	mux.HandleFunc("/admin/events", s.handleAdminEvents)

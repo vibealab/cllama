@@ -6,11 +6,16 @@ import (
 	"net/http"
 	"time"
 
+	"cllama/config"
 	"cllama/ui"
 )
 
 // Server holds the HTTP state for the cllama proxy.
 type Server struct {
+	// cfg is the in-memory system configuration, shared with the router
+	// and managed via GET/PUT /admin/config.
+	cfg *config.Store
+
 	router *Router
 
 	// events broadcasts state changes to the web UI over SSE.
@@ -32,9 +37,6 @@ type Server struct {
 	// When set, LLM API and model-list requests must present this bearer token.
 	apiToken string
 
-	// Timeout applied to upstream backend requests (0 = no timeout).
-	genTimeout time.Duration
-
 	// Reported as modified_at in the ollama /api/tags model list.
 	startedAt time.Time
 }
@@ -45,17 +47,22 @@ type Server struct {
 // servers, in the form http://[token@]host:port/<parent-model>.
 // parentAuth, when non-empty, is the token child cllama servers must present.
 // apiToken, when non-empty, is the bearer token required on LLM API requests.
-// genTimeout bounds each upstream backend request (0 = no timeout).
+// genTimeout bounds each upstream backend request (0 = no timeout); it
+// seeds the in-memory config and stays adjustable via PUT /admin/config.
 func New(maxQueue int, models []string, parentURLs []string, parentAuth, apiToken string, genTimeout time.Duration) (*Server, error) {
 	events := newEventHub()
+	appCfg := config.Default()
+	appCfg.MaxQueue = maxQueue
+	appCfg.GenTimeout = genTimeout
+	store := config.NewStore(appCfg)
 	s := &Server{
-		router:     NewRouter(maxQueue, models, events),
+		cfg:        store,
+		router:     NewRouter(store, models, events),
 		events:     events,
 		uiFS:       ui.FS(),
 		calls:      newCallRegistry(),
 		parentAuth: parentAuth,
 		apiToken:   apiToken,
-		genTimeout: genTimeout,
 		startedAt:  time.Now(),
 	}
 	s.parents = NewParentManager(s)

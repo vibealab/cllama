@@ -54,8 +54,9 @@
   for (const tab of document.querySelectorAll("#tabs .tab")) {
     tab.addEventListener("click", () => {
       document.querySelectorAll("#tabs .tab").forEach((t) => t.classList.toggle("active", t === tab));
-      $("#tab-queue").classList.toggle("hidden", tab.dataset.tab !== "queue");
-      $("#tab-models").classList.toggle("hidden", tab.dataset.tab !== "models");
+      for (const panel of document.querySelectorAll("main .panel")) {
+        panel.classList.toggle("hidden", panel.id !== "tab-" + tab.dataset.tab);
+      }
     });
   }
 
@@ -459,6 +460,7 @@
         refreshQueue();
         refreshBackendsAndModels();
         refreshParents();
+        Settings.refresh();
         break;
       case "queue":
         refreshQueue();
@@ -468,6 +470,9 @@
         break;
       case "parents":
         refreshParents();
+        break;
+      case "config":
+        Settings.refresh();
         break;
     }
   });

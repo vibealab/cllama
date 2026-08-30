@@ -27,6 +27,7 @@
 <nav id="tabs">
   <button class="tab active" data-tab="queue" type="button">Request queue</button>
   <button class="tab" data-tab="models" type="button">Models &amp; backends</button>
+  <button class="tab" data-tab="settings" type="button">Settings</button>
 </nav>
 
 <main>
@@ -98,10 +99,28 @@
       <div class="empty" id="parent-empty">No parent connections — this server does not tunnel to any parent.</div>
     </div>
   </section>
+
+  <!-- ── Tab 3: settings ────────────────────────────────────────────── -->
+  <section id="tab-settings" class="panel hidden">
+    <div class="card">
+      <div class="card-head">
+        <h2>System settings</h2>
+        <button type="button" id="settings-refresh-btn">🔄 Refresh</button>
+      </div>
+      <p class="hint">In-memory configuration of this cllama server (<code>GET /admin/config</code>). Values live only in RAM: change them with <code>PUT /admin/config</code>; a restart restores the defaults.</p>
+      <table>
+        <thead>
+          <tr><th>Setting</th><th>Value</th><th>Description</th></tr>
+        </thead>
+        <tbody id="settings-rows"></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 
 <script src="js/component.js"></script>
 <script src="js/api.js"></script>
+<script src="js/settings.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

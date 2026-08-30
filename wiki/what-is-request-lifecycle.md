@@ -29,18 +29,21 @@ stateDiagram-v2
 ## Retention of terminal states
 
 `done` and `fail` entries are not dropped silently: they stay visible for
-review and then expire. Their lifetimes are fixed at compile time in
-`server/router.go`:
+review and then expire. Their lifetimes are part of the server's
+[in-memory system configuration](../config/config.go) and default to `0`
+(no stay in the queue):
 
-| Constant | `-1` | `0` | `>0` |
+| Setting | `-1` | `0` (default) | `>0` |
 | --- | --- | --- | --- |
-| `DoneRequestRetention` (default `5m`) | keep forever until removed by hand | drop as soon as it completes | keep this long, then purge |
-| `FailedRequestRetention` (default `5m`) | keep forever until removed by hand | drop as soon as it fails | keep this long, then purge |
+| `done_retention_sec` (DoneRetention) | keep forever until removed by hand | drop as soon as it completes | keep this many seconds, then purge |
+| `failed_retention_sec` (FailedRetention) | keep forever until removed by hand | drop as soon as it fails | keep this many seconds, then purge |
 
-A background sweeper purges expired entries every second. While a positive
-retention is configured, every successful request remains visible in
-`GET /admin/queue` (and the UI's queued count) for that window; set the
-constant to `0` to go back to an in-flight-only view.
+A background sweeper purges expired entries every second. Retentions can be
+inspected and changed at runtime via `GET`/`PUT /admin/config` (see the
+Settings tab of the web UI); changes apply immediately and are lost on
+restart. With a positive retention, every successful request remains visible
+in `GET /admin/queue` (and the UI's queued count) for that window; keep the
+default `0` for a quiet, in-flight-only view.
 
 ## Admin operations
 
@@ -51,3 +54,5 @@ constant to `0` to go back to an in-flight-only view.
   retention.
 - The web UI's **Request queue** tab shows the same data live (over SSE),
   with a per-row remove button.
+- The queue depth itself is also configuration (`max_queue`, `-maxqueue`
+  flag); the **Settings** tab shows the current system settings.

@@ -50,8 +50,9 @@ reverse tunnel. No inbound connections to the GPU machines are needed.
 - **Hierarchies / tunneling**: child cllama servers dial out to a parent and
   serve its traffic using their local backends — perfect for GPUs behind NAT.
 - **Web UI**: a single-page dashboard embedded in the binary (served at
-  `/ui`): a live request-queue view and a model ↔ backend map with
-  register / unregister / enable / disable, updated over SSE.
+  `/ui`): a live request-queue view, a model ↔ backend map with
+  register / unregister / enable / disable, and the in-memory system
+  settings, updated over SSE.
 - **Auth**: optional bearer token for API traffic (`-token`) and separate
   token for child tunnel connections (`-parentauth`).
 
@@ -231,11 +232,11 @@ executed on the child's local Ollama. Details:
 | --- | --- | --- |
 | `-listen` | `:11434` | host:port to listen on |
 | `-name` | — | comma-separated mock model names exposed by this proxy |
-| `-maxqueue` | `100` | max requests queued while no backend is available |
+| `-maxqueue` | `100` | max requests queued while no backend is available (seeds the runtime config) |
 | `-parent` | — | parent cllama URL `http://[token@]host:port/<model>` (repeatable; `?to=<local-model>` to remap) |
 | `-parentauth` | — | token child cllama servers must present to tunnel into this server |
 | `-token` | — | bearer token required on all LLM API and model-list requests |
-| `-gen-timeout` | `0` | seconds before aborting an upstream generation request (0 = none) |
+| `-gen-timeout` | `0` | seconds before aborting an upstream generation request (0 = none; seeds the runtime config) |
 | `-debug-ui` | — | serve the web UI from this directory instead of the embedded assets (development) |
 
 ## Endpoints
@@ -254,6 +255,7 @@ executed on the child's local Ollama. Details:
 | `POST /admin/backends/<id>/bindings` | bind another model to a backend |
 | `POST /admin/backends/<id>/enabled` | enable/disable a backend (incl. child tunnels), body `{"enabled": true\|false}` |
 | `GET /admin/models` | mock models with their backend bindings |
+| `GET/PUT /admin/config` | show / update the in-memory system settings (queue depth, done/fail retention) |
 | `GET/DELETE /admin/parents` | inspect / disconnect tunnel parent connections |
 | `GET /admin/queue` | requests tracked in the lifecycle queue (pending / takeaway / processing / done / fail) |
 | `DELETE /admin/queue/<id>` | remove a queued request by hand (e.g. a retained done or failed one) |
@@ -270,6 +272,9 @@ Every cllama server embeds a small dashboard, served at `http://<listen>/ui/`:
 - **Models & backends** tab — which mock model maps to which upstream server
   or connected child cllama tunnel, with register / unregister and
   enable / disable controls, plus the child side's parent connections.
+- **Settings** tab — the server's in-memory system configuration (max queue
+  size, done / failed request retention, generation timeout), from
+  `GET /admin/config`.
 
 The page subscribes to `GET /admin/events` (Server-Sent Events); the server
 pushes a `queue`, `backends` or `parents` topic whenever state changes, so
