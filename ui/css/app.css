@@ -254,7 +254,7 @@ button.danger-solid { background: var(--red); border-color: var(--red); color: v
   gap: 12px;
 }
 .form-col label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
-.form-col input, .form-col select {
+.form-col input, .form-col select, .form-col textarea {
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -262,7 +262,13 @@ button.danger-solid { background: var(--red); border-color: var(--red); color: v
   font: inherit;
   padding: 7px 9px;
 }
-.form-col input:focus, .form-col select:focus { outline: none; border-color: var(--accent); }
+.form-col input:focus, .form-col select:focus, .form-col textarea:focus { outline: none; border-color: var(--accent); }
+.form-col textarea { min-height: 130px; resize: vertical; }
+/* backend select + proxy button (manual respond dialog) */
+.respond-proxy-row { display: flex; gap: 8px; align-items: center; }
+.respond-proxy-row select { flex: 1; min-width: 0; }
+.icon-btn:disabled { opacity: 0.5; cursor: wait; }
+.icon-btn:disabled:hover { background: none; border-color: transparent; }
 .form-error {
   color: var(--red);
   font-size: 12.5px;

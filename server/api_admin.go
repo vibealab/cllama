@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -25,6 +26,10 @@ import (
 // PUT    /admin/config            - update the in-memory system settings
 // GET    /admin/queue             - requests tracked in the request queue
 // DELETE /admin/queue/<id>        - remove a request from the queue
+// POST   /admin/queue/<id>/takeover - pin a pending request for manual handling
+// POST   /admin/queue/<id>/pending  - release a taken-over request back to pending
+// POST   /admin/queue/<id>/resolve  - answer a taken-over request by hand {"content": "…"}
+// POST   /admin/queue/<id>/proxy    - replay the request's payload to a backend {"backend_id": "…"}
 
 // registerRequest is the admin body for registering an upstream server.
 type registerRequest struct {
@@ -122,6 +127,9 @@ func (s *Server) handleAdminQueue(w http.ResponseWriter, r *http.Request) {
 			"state":   q.State,
 			"backend": q.AssignedTo,
 			"error":   q.Error,
+			// manual marks a takeaway set by an admin (manual handling),
+			// as opposed to a backend assignment by the selector.
+			"manual": q.manual,
 		}
 		if q.EndedAt.IsZero() {
 			// Still in flight: processing time ticks live.
@@ -142,25 +150,97 @@ func (s *Server) handleAdminQueue(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAdminQueueDetail serves DELETE /admin/queue/<id>: manually removing
-// a request from the queue (e.g. a failed one kept for inspection).
+// handleAdminQueueDetail serves /admin/queue/<id>[/sub]: manually removing a
+// request from the queue (e.g. a failed one kept for inspection) and the
+// manual-handling (takeaway) flow:
+//
+//   - POST .../takeover: pin a pending request so the selector never routes
+//     it; it waits for a hand-written answer or for being released.
+//   - POST .../pending: release a manually taken-over request back to
+//     pending (the web UI's modal Cancel), letting the selector route it.
+//   - POST .../resolve {"content": "…"}: answer a taken-over request by
+//     hand; the blocked client call completes with this text as the
+//     assistant response.
+//   - POST .../proxy {"backend_id": "…"}: replay the queued request's
+//     original payload through the chosen backend and return the generated
+//     text, so the admin can draft (and edit) an answer before resolving.
 func (s *Server) handleAdminQueueDetail(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/admin/queue/")
-	id, _, _ := strings.Cut(rest, "/")
+	id, sub, _ := strings.Cut(rest, "/")
 	if id == "" {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "missing request id"})
 		return
 	}
-	if r.Method != http.MethodDelete {
+
+	switch {
+	case sub == "" && r.Method == http.MethodDelete:
+		log.Printf("[admin] remove queued request %q requested", id)
+		if s.router.RemoveQueued(id) {
+			respondJSON(w, http.StatusOK, map[string]string{"status": "removed", "id": id})
+			return
+		}
+		respondJSON(w, http.StatusNotFound, map[string]string{"error": "queued request not found"})
+
+	case sub == "takeover" && r.Method == http.MethodPost:
+		if s.router.TakeoverQueued(id) {
+			respondJSON(w, http.StatusOK, map[string]string{"status": "takeaway", "id": id})
+			return
+		}
+		respondJSON(w, http.StatusConflict, map[string]string{"error": "request is not pending (or already taken over)"})
+
+	case sub == "pending" && r.Method == http.MethodPost:
+		if s.router.ReleaseQueued(id) {
+			respondJSON(w, http.StatusOK, map[string]string{"status": "pending", "id": id})
+			return
+		}
+		respondJSON(w, http.StatusConflict, map[string]string{"error": "request is not manually taken over"})
+
+	case sub == "resolve" && r.Method == http.MethodPost:
+		var body struct {
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+			return
+		}
+		if s.router.ResolveQueued(id, body.Content) {
+			respondJSON(w, http.StatusOK, map[string]string{"status": "resolved", "id": id})
+			return
+		}
+		respondJSON(w, http.StatusConflict, map[string]string{"error": "request is not taken over (or already answered)"})
+
+	case sub == "proxy" && r.Method == http.MethodPost:
+		var body struct {
+			BackendID string `json:"backend_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.BackendID == "" {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: backend_id is required"})
+			return
+		}
+		resp, err := s.router.ProxyQueuedToBackend(r.Context(), id, body.BackendID)
+		if err != nil {
+			status := http.StatusBadGateway
+			switch {
+			case errors.Is(err, ErrQueuedNotFound):
+				status = http.StatusNotFound
+			case errors.Is(err, ErrBackendNotFound):
+				status = http.StatusNotFound
+			case errors.Is(err, ErrNoChatPayload):
+				status = http.StatusConflict
+			}
+			log.Printf("[admin] proxy queued request %q to backend %q failed: %v", id, body.BackendID, err)
+			respondJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+		content := ""
+		if len(resp.Choices) > 0 {
+			content = chatMessageText(resp.Choices[0].Message)
+		}
+		respondJSON(w, http.StatusOK, map[string]interface{}{"content": content})
+
+	default:
 		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
 	}
-	log.Printf("[admin] remove queued request %q requested", id)
-	if s.router.RemoveQueued(id) {
-		respondJSON(w, http.StatusOK, map[string]string{"status": "removed", "id": id})
-		return
-	}
-	respondJSON(w, http.StatusNotFound, map[string]string{"error": "queued request not found"})
 }
 
 // ── List backends ────────────────────────────────────────────────────────────

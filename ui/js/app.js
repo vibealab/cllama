@@ -122,6 +122,11 @@
       }
       renderWait(tdWait);
       const tdAct = el("td", "actions-cell");
+      if (req.state === "pending") {
+        tdAct.appendChild(iconButton("✋", "Take away (manual handling) and respond", () => takeoverAndRespond(req)));
+      } else if (req.state === "takeaway" && req.manual) {
+        tdAct.appendChild(iconButton("✋", "Open manual response dialog", () => openRespondDialog(req)));
+      }
       tdAct.appendChild(iconButton("🗑️", "Remove from queue", () => removeQueued(req.id)));
       tr.append(tdId, tdModel, tdState, tdBackend, tdWait, tdAct);
       tbody.appendChild(tr);
@@ -137,6 +142,136 @@
       UI.toast("remove failed: " + err.message, "bad");
     }
     refreshQueue();
+  }
+
+  // ── manual handling (takeaway flow) ──────────────────────────────────
+  // Pin a pending request (the selector stops routing it) and open the
+  // respond dialog. Cancelling the dialog marks the request pending again.
+  async function takeoverAndRespond(req) {
+    try {
+      await API.takeoverQueued(req.id);
+    } catch (err) {
+      UI.toast("takeover failed: " + err.message, "bad");
+      refreshQueue();
+      return;
+    }
+    refreshQueue();
+    openRespondDialog(req);
+  }
+
+  function openRespondDialog(req) {
+    // Once an answer has been sent, closing must not release the request.
+    let settled = false;
+
+    const error = el("div", "form-error hidden");
+    const showError = (msg) => {
+      error.textContent = msg;
+      error.classList.remove("hidden");
+    };
+
+    const answer = el("textarea");
+    answer.rows = 8;
+    answer.placeholder = "Type the response to send to the client…";
+
+    const backendSel = el("select");
+    const proxyBtn = iconButton("📡", "Proxy the request to the selected backend and draft a response", () => proxyToBackend());
+    const proxyRow = el("div", "respond-proxy-row");
+    proxyRow.append(backendSel, proxyBtn);
+
+    const body = el("div", "form-col");
+    body.append(
+      field("Response", answer, "sent to the client as typed"),
+      field("Draft with backend", proxyRow, "proxies the original request into the text area"),
+      error,
+    );
+
+    // Offer every chat-capable backend (embedding-only ones cannot answer).
+    async function loadBackends() {
+      try {
+        const data = await API.backends();
+        const chat = (data.backends || []).filter((be) => {
+          const caps = be.capabilities || [];
+          return caps.length === 0 || caps.includes("completion");
+        });
+        backendSel.replaceChildren();
+        if (!chat.length) {
+          const opt = el("option", null, "no chat backends registered");
+          opt.value = "";
+          opt.disabled = true;
+          backendSel.appendChild(opt);
+          return;
+        }
+        for (const be of chat) {
+          const opt = el("option", null, `${be.id} · ${be.type} · ${be.endpoint}${be.disabled ? " (disabled)" : ""}`);
+          opt.value = be.id;
+          backendSel.appendChild(opt);
+        }
+      } catch (err) {
+        showError("loading backends failed: " + err.message);
+      }
+    }
+
+    async function proxyToBackend() {
+      if (!backendSel.value) {
+        showError("Select a backend to proxy to first.");
+        return;
+      }
+      error.classList.add("hidden");
+      proxyBtn.disabled = true;
+      proxyBtn.textContent = "⏳";
+      try {
+        const data = await API.proxyQueued(req.id, backendSel.value);
+        answer.value = data.content || "";
+        answer.focus();
+      } catch (err) {
+        showError("proxy failed: " + err.message);
+      } finally {
+        proxyBtn.disabled = false;
+        proxyBtn.textContent = "📡";
+      }
+    }
+
+    async function send(btn) {
+      const text = answer.value;
+      if (!text.trim()) {
+        showError("The response is empty.");
+        return;
+      }
+      error.classList.add("hidden");
+      btn.disabled = true;
+      try {
+        await API.resolveQueued(req.id, text);
+        settled = true; // closing below must not release the request
+        UI.toast(`response sent to the client for ${req.id}`);
+        dlg.close();
+      } catch (err) {
+        btn.disabled = false;
+        showError("send failed: " + err.message);
+      }
+    }
+
+    const dlg = UI.modal({
+      title: `Respond to ${req.id}${req.model ? " · " + req.model : ""}`,
+      content: body,
+      actions: [
+        { label: "Cancel", onClick: (close) => close() },
+        { label: "📤 Send", className: "primary", onClick: (close, btn) => send(btn) },
+      ],
+      // Cancel (also ✕, mask click or Escape): unless an answer was sent,
+      // the request goes back to pending so the selector can route it again.
+      onClose: async () => {
+        if (settled) {
+          refreshQueue();
+          return;
+        }
+        try {
+          await API.releaseQueued(req.id);
+        } catch (_) { /* the entry may already be gone (client left) */ }
+        refreshQueue();
+      },
+    });
+    loadBackends();
+    answer.focus();
   }
 
   // Local-only ticker: grows the displayed times between SSE events —

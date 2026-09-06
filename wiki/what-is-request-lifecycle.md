@@ -10,7 +10,7 @@ it recently did.
 | State | Meaning |
 | --- | --- |
 | `pending` | The request is enqueued and the backend selector is scanning the registry for a backend that serves its model. |
-| `takeaway` | A backend has been assigned ("taken away" for serving) but the upstream call has not started yet. In the future this state can also be set manually by an admin to pin a request so the selector never routes it and it can be operated on by hand. |
+| `takeaway` | A backend has been assigned ("taken away" for serving) but the upstream call has not started yet. An admin can also set this state manually (`POST /admin/queue/<id>/takeover`, the UI's ✋ button) to pin a `pending` request so the selector never routes it; it then waits for a hand-written answer (`resolve`) or to be released back to `pending`. Manually taken-over requests show no assigned backend. |
 | `processing` | The assigned backend is actively serving the request. |
 | `done` | The backend answered successfully. The entry lingers in the queue for review before being purged. |
 | `fail` | The backend request failed (the recorded error explains why). The entry also lingers for review. |
@@ -19,7 +19,10 @@ it recently did.
 stateDiagram-v2
     [*] --> pending : request arrives → enqueued
     pending --> takeaway : backend assigned
+    pending --> takeaway : admin manual takeover (✋)
+    takeaway --> pending : admin release (modal cancel)
     takeaway --> processing : backend starts serving
+    takeaway --> done : admin manual answer (send)
     processing --> done : response complete → retained for review
     processing --> fail : backend error → retained
     done --> [*] : retention expired or admin DELETE
@@ -48,10 +51,18 @@ default `0` for a quiet, in-flight-only view.
 ## Admin operations
 
 - `GET /admin/queue` lists all tracked requests with their `state`, assigned
-  `backend`, and `error` (for failures).
+  `backend`, `error` (for failures) and `manual` flag (manual takeover).
 - `DELETE /admin/queue/<id>` removes any request by hand — useful to clear
   retained `done` / `fail` entries, especially under `-1` (keep forever)
   retention.
+- Manual handling of a `pending` request (the UI's ✋ button and its modal):
+  `POST /admin/queue/<id>/takeover` pins it as `takeaway` so the selector
+  stops routing it; `POST /admin/queue/<id>/proxy` replays its original
+  payload through a backend the admin picks (drafting aid only — the
+  request stays blocked); `POST /admin/queue/<id>/resolve` with
+  `{"content": "…"}` completes the blocked client call with the admin's
+  text as the assistant response; `POST /admin/queue/<id>/pending` releases
+  it back to `pending` (what the modal's Cancel does).
 - The web UI's **Request queue** tab shows the same data live (over SSE),
   with a per-row remove button.
 - The queue depth itself is also configuration (`max_queue`, `-maxqueue`

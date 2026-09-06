@@ -76,6 +76,10 @@ Claude Code works against non-Anthropic upstreams too.
 | `GET/DELETE /admin/parents` | inspect / disconnect tunnel parent connections |
 | `GET /admin/queue` | requests tracked in the lifecycle queue (pending / takeaway / processing / done / fail) |
 | `DELETE /admin/queue/<id>` | remove a queued request by hand (e.g. a retained done or failed one) |
+| `POST /admin/queue/<id>/takeover` | pin a `pending` request as `takeaway` so the selector never routes it and it can be operated on by hand |
+| `POST /admin/queue/<id>/pending` | release a manually taken-over request back to `pending` |
+| `POST /admin/queue/<id>/resolve` | answer a taken-over request by hand, body `{"content": "…"}`; the blocked client call completes with this text as the assistant response |
+| `POST /admin/queue/<id>/proxy` | replay the queued request's original payload through one backend, body `{"backend_id": "…"}`; returns `{"content": "…"}` for the admin to review before resolving |
 | `GET /admin/events` | Server-Sent Events stream of admin state changes |
 
 `GET /admin/events` pushes one topic line per change — `queue`, `backends`,

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -19,6 +20,18 @@ var (
 	// ErrQueueFull is returned when no backend serves the requested model
 	// and the request queue is at capacity.
 	ErrQueueFull = errors.New("no backend available and request queue is full")
+	// ErrManualResolved is returned by Acquire when an admin answered a
+	// manually taken-over request (see ResolveQueued): the caller completes
+	// the client with the admin's answer instead of calling a backend. The
+	// returned handle is non-nil and carries the answer (ManualAnswer).
+	ErrManualResolved = errors.New("answered manually by an admin")
+	// ErrQueuedNotFound reports an unknown request id in a queue operation.
+	ErrQueuedNotFound = errors.New("queued request not found")
+	// ErrNoChatPayload reports that a queued request stores no chat payload
+	// to replay (e.g. embedding requests), so it cannot be proxied.
+	ErrNoChatPayload = errors.New("queued request stores no chat payload")
+	// ErrBackendNotFound reports an unknown backend id in a queue operation.
+	ErrBackendNotFound = errors.New("backend not found")
 )
 
 // BackendEntry is a registered upstream LLM server.
@@ -124,9 +137,11 @@ const (
 	// looking for a backend to serve it.
 	StatePending RequestState = "pending"
 	// StateTakeaway: a backend has been assigned ("taken away" for serving)
-	// but the upstream call has not started yet. In the future this state
-	// can also be set manually by an admin to pin a request so the selector
-	// never routes it and it can be operated on by hand.
+	// but the upstream call has not started yet. An admin can also set this
+	// state manually (POST /admin/queue/<id>/takeover) to pin a pending
+	// request so the selector never routes it: the request then waits for a
+	// hand-written answer (resolve) or to be released back to pending.
+	// Manually taken-over requests have no AssignedTo backend.
 	StateTakeaway RequestState = "takeaway"
 	// StateProcessing: a backend is actively serving the request.
 	StateProcessing RequestState = "processing"
@@ -161,6 +176,21 @@ type queuedRequest struct {
 	// from the queue (see RemoveQueued) or it is released. Calling it after
 	// the request finished is a no-op. Guarded by queueMu once stored.
 	cancel context.CancelFunc
+
+	// req is the original chat payload, kept so an admin can proxy it to a
+	// chosen backend while drafting a manual answer (ProxyQueuedToBackend).
+	// Nil for non-chat requests (embeddings). Set once at Acquire; the
+	// pointed-to value is only mutated by the handler after Acquire returns.
+	req *client.ChatRequest
+	// manual marks a request pinned by an admin for manual handling: the
+	// selector must not route it while set. Guarded by queueMu.
+	manual bool
+	// manualCh delivers the admin's hand-written answer to the queue wait
+	// loop in Acquire (buffered size 1 so ResolveQueued never blocks).
+	manualCh chan string
+	// manualAnswer holds the delivered answer once Acquire has returned
+	// ErrManualResolved; read by the handler via RequestHandle.ManualAnswer.
+	manualAnswer string
 }
 
 // terminalRetention returns how long a request in the given terminal state
@@ -443,16 +473,30 @@ func (r *Router) NextBackendForModel(mockModel string) (*BackendEntry, string, b
 // terminal states linger in the queue for their configured retention (see
 // config.Config) for review before being purged or removed by hand. When no
 // backend is available the call waits (holding a queue slot, up to the
-// configured MaxQueue) until one is registered, the context is cancelled,
-// or the queue is full. On error the handle is nil and nothing remains
-// queued.
-func (r *Router) Acquire(ctx context.Context, mockModel string) (*BackendEntry, string, *RequestHandle, error) {
+// configured MaxQueue) until one is registered, the context is cancelled, or
+// the queue is full. On any other error the handle is nil and nothing
+// remains queued. The sole exception is ErrManualResolved: the admin
+// answered the request by hand while it waited, the handle is non-nil and
+// carries the answer (ManualAnswer) to return to the client.
+//
+// payload is the original chat request (nil for embeddings); it is stored on
+// the queue entry so the admin UI can proxy it to a backend while drafting a
+// manual answer.
+func (r *Router) Acquire(ctx context.Context, mockModel string, payload *client.ChatRequest) (*BackendEntry, string, *RequestHandle, error) {
 	// Every request enters the queue as soon as it arrives. callCtx derives
 	// from the caller's context and is additionally cancelled when the entry
 	// is removed from the queue, aborting queue waits and in-flight
 	// generation (see RequestHandle.Context and RemoveQueued).
 	callCtx, cancel := context.WithCancel(ctx)
-	entry := &queuedRequest{ID: generateID(), Model: mockModel, State: StatePending, At: time.Now(), cancel: cancel}
+	entry := &queuedRequest{
+		ID:       generateID(),
+		Model:    mockModel,
+		State:    StatePending,
+		At:       time.Now(),
+		cancel:   cancel,
+		req:      payload,
+		manualCh: make(chan string, 1),
+	}
 	defer func() {
 		// Safety net: no leak if the entry never stays queued (queue-full,
 		// cancelled wait). When it is still live the later release, Done or
@@ -467,16 +511,7 @@ func (r *Router) Acquire(ctx context.Context, mockModel string) (*BackendEntry, 
 	r.events.emit(topicQueue)
 	h := &RequestHandle{router: r, entry: entry, ctx: callCtx}
 
-	// take marks the request as taken away for the given backend.
-	take := func(be *BackendEntry) {
-		r.transition(entry, func(q *queuedRequest) {
-			q.State = StateTakeaway
-			q.AssignedTo = be.ID
-		})
-	}
-
-	if be, up, ok := r.NextBackendForModel(mockModel); ok {
-		take(be)
+	if be, up, ok := r.NextBackendForModel(mockModel); ok && r.takeIfOpen(entry, be) {
 		return be, up, h, nil
 	}
 	// Take a queue wait slot or reject immediately when queueing is
@@ -511,13 +546,169 @@ func (r *Router) Acquire(ctx context.Context, mockModel string) (*BackendEntry, 
 		case <-callCtx.Done():
 			r.release(entry)
 			return nil, "", nil, callCtx.Err()
+		case answer := <-entry.manualCh:
+			// An admin answered this request by hand (see ResolveQueued):
+			// hand the answer back to the caller instead of routing it.
+			entry.manualAnswer = answer
+			return nil, "", h, ErrManualResolved
 		case <-ticker.C:
-			if be, up, ok := r.NextBackendForModel(mockModel); ok {
-				take(be)
+			if r.isManual(entry) {
+				continue // pinned for manual handling: the selector must not route it
+			}
+			if be, up, ok := r.NextBackendForModel(mockModel); ok && r.takeIfOpen(entry, be) {
 				return be, up, h, nil
 			}
 		}
 	}
+}
+
+// takeIfOpen marks a request as taken away for the given backend and reports
+// whether it succeeded. It refuses (returning false) when an admin pinned
+// the request for manual handling in the meantime, so a concurrent takeover
+// always wins over the selector.
+func (r *Router) takeIfOpen(entry *queuedRequest, be *BackendEntry) bool {
+	taken := false
+	r.transition(entry, func(q *queuedRequest) {
+		if q.manual {
+			return
+		}
+		q.State = StateTakeaway
+		q.AssignedTo = be.ID
+		taken = true
+	})
+	return taken
+}
+
+// isManual reports whether a still-queued request is pinned for manual
+// handling (see TakeoverQueued).
+func (r *Router) isManual(entry *queuedRequest) bool {
+	r.queueMu.Lock()
+	defer r.queueMu.Unlock()
+	q, live := r.queued[entry.ID]
+	return live && q.manual
+}
+
+// ManualAnswer returns the admin-authored answer attached to this handle
+// when Acquire returned ErrManualResolved; empty otherwise.
+func (h *RequestHandle) ManualAnswer() string {
+	if h == nil {
+		return ""
+	}
+	return h.entry.manualAnswer
+}
+
+// TakeoverQueued pins a pending request for manual handling: it moves to
+// "takeaway" with no backend assigned and the selector stops routing it.
+// The request then waits until an admin answers it (ResolveQueued) or hands
+// it back to the selector (ReleaseQueued). Only pending requests can be
+// taken over; it reports whether one was found.
+func (r *Router) TakeoverQueued(id string) bool {
+	var ok bool
+	r.queueMu.Lock()
+	if q, live := r.queued[id]; live && q.State == StatePending && !q.manual {
+		q.manual = true
+		q.State = StateTakeaway
+		ok = true
+	}
+	r.queueMu.Unlock()
+	if ok {
+		log.Printf("[queue] request %s taken over for manual handling", id)
+		r.events.emit(topicQueue)
+	}
+	return ok
+}
+
+// ReleaseQueued hands a manually taken-over request back to the selector:
+// it becomes pending again and may be routed to a backend as usual. It
+// reports whether a manually taken-over request was found.
+func (r *Router) ReleaseQueued(id string) bool {
+	var ok bool
+	r.queueMu.Lock()
+	if q, live := r.queued[id]; live && q.manual && q.State == StateTakeaway {
+		q.manual = false
+		q.State = StatePending
+		ok = true
+	}
+	r.queueMu.Unlock()
+	if ok {
+		log.Printf("[queue] request %s released back to pending", id)
+		r.events.emit(topicQueue)
+	}
+	return ok
+}
+
+// ResolveQueued delivers a hand-written answer to a manually taken-over
+// request; the blocked client call completes with it (see ErrManualResolved).
+// It reports whether the answer was delivered (the request is taken over and
+// no answer was queued yet).
+func (r *Router) ResolveQueued(id, answer string) bool {
+	delivered := false
+	r.queueMu.Lock()
+	if q, live := r.queued[id]; live && q.manual && q.State == StateTakeaway {
+		select {
+		case q.manualCh <- answer:
+			delivered = true
+		default: // an answer was already delivered and not picked up yet
+		}
+	}
+	r.queueMu.Unlock()
+	if delivered {
+		log.Printf("[queue] request %s manually answered (%d chars)", id, len(answer))
+	}
+	return delivered
+}
+
+// ProxyQueuedToBackend replays the original chat payload of a queued request
+// against the chosen backend without touching the request's lifecycle: it is
+// the drafting path for manual answers (the admin reviews the generated text
+// before resolving the request). The request's mock model is rewritten to
+// the backend's bound upstream model, falling back to the backend's first
+// binding when the mock model is not bound there.
+func (r *Router) ProxyQueuedToBackend(ctx context.Context, id, backendID string) (*client.ChatResponse, error) {
+	r.queueMu.Lock()
+	q := r.queued[id]
+	r.queueMu.Unlock()
+	if q == nil {
+		return nil, ErrQueuedNotFound
+	}
+	if q.req == nil || len(q.req.Messages) == 0 {
+		return nil, ErrNoChatPayload
+	}
+	var be *BackendEntry
+	for _, b := range r.Backends() {
+		if b.ID == backendID {
+			be = b
+			break
+		}
+	}
+	if be == nil {
+		return nil, ErrBackendNotFound
+	}
+	upstream, ok := be.UpstreamModel(q.Model)
+	if !ok {
+		// Deterministic fallback so a manual proxy works even for backends
+		// not bound to the request's mock model.
+		if names := make([]string, 0, len(be.Bindings)); len(be.Bindings) > 0 {
+			for mock := range be.Bindings {
+				names = append(names, mock)
+			}
+			sort.Strings(names)
+			upstream = be.Bindings[names[0]]
+		}
+	}
+	if upstream == "" {
+		return nil, fmt.Errorf("backend %q has no model bindings", backendID)
+	}
+
+	// Shallow copy: only the copy's routing fields are rewritten, the
+	// original stays untouched for the still-blocked client request.
+	req := *q.req
+	req.Model = upstream
+	req.Stream = false
+	if be.client == nil {
+		return nil, fmt.Errorf("backend %q cannot serve chat requests", backendID)
+	}
+	return be.client.Chat(ctx, &req)
 }
 
 // transition applies a state change to a still-queued request and notifies

@@ -36,7 +36,14 @@ var errClientGone = errors.New("cancelled: client disconnected")
 // On success req.Model is rewritten to the upstream model name.
 func (s *Server) execChat(ctx context.Context, req *client.ChatRequest) (*client.ChatResponse, error) {
 	mockModel := req.Model
-	be, upstreamModel, rq, err := s.router.Acquire(ctx, mockModel)
+	be, upstreamModel, rq, err := s.router.Acquire(ctx, mockModel, req)
+	if errors.Is(err, ErrManualResolved) {
+		// An admin answered this request by hand (web UI takeaway flow):
+		// return the authored answer to the client instead of a backend.
+		resp := manualChatResponse(mockModel, rq.ManualAnswer())
+		rq.Done()
+		return resp, nil
+	}
 	if err != nil {
 		log.Printf("[route] chat %q: no backend: %v", mockModel, err)
 		return nil, err
@@ -65,7 +72,17 @@ func (s *Server) execChat(ctx context.Context, req *client.ChatRequest) (*client
 // the upstream generation.
 func (s *Server) execChatStream(ctx context.Context, req *client.ChatRequest, emit func(event string) bool) error {
 	mockModel := req.Model
-	be, upstreamModel, rq, err := s.router.Acquire(ctx, mockModel)
+	be, upstreamModel, rq, err := s.router.Acquire(ctx, mockModel, req)
+	if errors.Is(err, ErrManualResolved) {
+		// Hand-written admin answer: relay it to the client as a minimal
+		// OpenAI-format SSE stream, exactly like a backend would.
+		if !emitManualAnswerStream(mockModel, rq.ManualAnswer(), emit) {
+			rq.Fail(errClientGone)
+			return errClientGone
+		}
+		rq.Done()
+		return nil
+	}
 	if err != nil {
 		log.Printf("[route] chat stream %q: no backend: %v", mockModel, err)
 		return err
@@ -123,7 +140,15 @@ func (s *Server) execChatStream(ctx context.Context, req *client.ChatRequest, em
 
 // execEmbedding routes and executes an embedding request.
 func (s *Server) execEmbedding(ctx context.Context, model string, input interface{}) ([][]float64, error) {
-	be, upstreamModel, rq, err := s.router.Acquire(ctx, model)
+	be, upstreamModel, rq, err := s.router.Acquire(ctx, model, nil)
+	if errors.Is(err, ErrManualResolved) {
+		// A text answer cannot satisfy an embedding request; surface the
+		// situation to the client and mark the queue entry as failed.
+		manErr := fmt.Errorf("request was manually answered by an admin; manual answers are not supported for embedding requests")
+		log.Printf("[route] embed %q: %v", model, manErr)
+		rq.Fail(manErr)
+		return nil, manErr
+	}
 	if err != nil {
 		log.Printf("[route] embed %q: no backend: %v", model, err)
 		return nil, err
@@ -292,6 +317,62 @@ func (s *Server) streamChatResponse(w http.ResponseWriter, r *http.Request, req 
 			flusher.Flush()
 		}
 	}
+}
+
+// ── Manual answers (admin takeaway flow) ────────────────────────────────────
+
+// manualChatResponse wraps a hand-written admin answer in an OpenAI-format
+// non-streaming chat response; the route handlers translate it to whatever
+// wire format the client speaks.
+func manualChatResponse(model, content string) *client.ChatResponse {
+	return &client.ChatResponse{
+		ID:      "chatcmpl-cllama-manual",
+		Object:  "chat.completion",
+		Created: time.Now().Unix(),
+		Model:   model,
+		Choices: []client.ChatChoice{{
+			Index:        0,
+			Message:      client.ChatMessage{Role: "assistant", Content: content},
+			FinishReason: "stop",
+		}},
+	}
+}
+
+// emitManualAnswerStream relays a hand-written answer as OpenAI-format SSE
+// events (content chunk, finish chunk, [DONE]) through emit, mirroring what
+// a real backend stream produces. It reports false when the consumer
+// vanished (emit returned false), which the caller fails as errClientGone.
+func emitManualAnswerStream(model, content string, emit func(event string) bool) bool {
+	now := time.Now().Unix()
+	base := client.StreamingChatResponse{
+		ID:      "chatcmpl-cllama-manual",
+		Object:  "chat.completion.chunk",
+		Created: now,
+		Model:   model,
+	}
+	contentChunk := base
+	contentChunk.Choices = []client.StreamingChatChoice{{
+		Index: 0,
+		Delta: client.ChatMessage{Role: "assistant", Content: content},
+	}}
+	finishChunk := base
+	finishChunk.Choices = []client.StreamingChatChoice{{Index: 0, FinishReason: "stop"}}
+
+	events := make([]string, 0, 3)
+	for _, chunk := range []client.StreamingChatResponse{contentChunk, finishChunk} {
+		b, err := json.Marshal(chunk)
+		if err != nil {
+			return false // unreachable for these types
+		}
+		events = append(events, "data: "+string(b)+"\n\n")
+	}
+	events = append(events, "data: [DONE]\n\n")
+	for _, evt := range events {
+		if !emit(evt) {
+			return false
+		}
+	}
+	return true
 }
 
 // isOllamaRoute reports whether path speaks ollama's wire format. Note that

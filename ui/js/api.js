@@ -44,6 +44,12 @@ window.API = (() => {
 
     // Request queue
     removeQueued: (id) => sendJSON("DELETE", `/admin/queue/${enc(id)}`),
+    // Manual handling (takeaway flow): pin a pending request, release it
+    // back to pending, answer it by hand, or proxy its payload to a backend.
+    takeoverQueued: (id) => sendJSON("POST", `/admin/queue/${enc(id)}/takeover`),
+    releaseQueued: (id) => sendJSON("POST", `/admin/queue/${enc(id)}/pending`),
+    resolveQueued: (id, content) => sendJSON("POST", `/admin/queue/${enc(id)}/resolve`, { content }),
+    proxyQueued: (id, backendId) => sendJSON("POST", `/admin/queue/${enc(id)}/proxy`, { backend_id: backendId }),
 
     // System settings (in-memory config)
     updateConfig:   (cfg) => sendJSON("PUT", "/admin/config", cfg),

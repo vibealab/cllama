@@ -276,6 +276,10 @@ Every cllama server embeds a small dashboard, served at `http://<listen>/ui/`:
 - **Request queue** tab — live view of every in-flight request (model,
   [lifecycle state](wiki/what-is-request-lifecycle.md), assigned backend,
   wait time, queue depth), with manual removal, from `GET /admin/queue`.
+  Pending requests can be taken away (✋) for manual handling: a dialog
+  lets you type a response and 📤 send it to the waiting client, optionally
+  drafting it by 📡 proxying the original request through any chat backend;
+  cancelling marks the request `pending` again.
 - **Models & backends** tab — which mock model maps to which upstream server
   or connected child cllama tunnel, with register / unregister and
   enable / disable controls, plus the child side's parent connections.
